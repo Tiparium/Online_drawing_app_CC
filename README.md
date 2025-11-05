@@ -10,6 +10,10 @@ A modern, feature-rich drawing application built with Fabric.js, designed to run
 - 🖼️ **Image Loading**: Load images onto the canvas
 - 💾 **Save**: Export your drawings as PNG images
 - 🎯 **Select & Move**: Select and manipulate objects on the canvas
+- 👥 **Multi-User Support**: Real-time collaboration with multiple users
+- 🎯 **Live Cursors**: See other users' cursors in real-time
+- ⚡ **Physics-Based Smoothing**: Momentum-based brush smoothing for natural drawing feel
+- 🐛 **Debug Tools**: Simulated users for testing multi-user scenarios
 
 ## Local Development
 
@@ -102,12 +106,25 @@ docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/fabricjs-drawing-app:la
 ├── public/
 │   ├── index.html      # Main HTML file
 │   ├── styles.css      # Application styles
-│   └── app.js          # Fabric.js application logic
-├── server.js           # Express server
+│   └── app.js          # Fabric.js application logic (multi-user)
+├── server.js           # Express + WebSocket server
 ├── package.json        # Dependencies and scripts
 ├── Dockerfile          # Docker configuration for containerization
+├── ARCHITECTURE.md     # Detailed architecture design for AWS deployment
+├── INTEGRATION_POINTS.md # Quick reference for DynamoDB integration
 └── README.md           # This file
 ```
+
+## Architecture & Design
+
+This application is designed to evolve into a full-featured whiteboard platform with:
+- **Multi-Canvas Support**: Global, company, and private canvases
+- **Persistence**: DynamoDB storage for canvas state
+- **Authentication**: AWS Cognito integration
+- **Space Reservation**: Paid canvas space allocation
+- **Real-time Collaboration**: WebSocket-based updates
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for detailed design documentation and [`INTEGRATION_POINTS.md`](INTEGRATION_POINTS.md) for code integration references.
 
 ## Environment Variables
 
@@ -119,9 +136,19 @@ The application includes a health check endpoint at `/health` that returns a 200
 
 ## Technologies Used
 
+### Current Stack
 - **Fabric.js**: Canvas manipulation library
 - **Express.js**: Web server framework
+- **WebSocket (ws)**: Real-time communication
 - **Node.js**: Runtime environment
+
+### Planned AWS Stack
+- **S3 + CloudFront**: Frontend hosting and CDN
+- **API Gateway**: WebSocket and REST APIs
+- **AWS Lambda**: Serverless backend functions
+- **DynamoDB**: Canvas state persistence
+- **Cognito**: User authentication/authorization
+- **EventBridge**: Scheduled tasks (snapshots, compaction)
 
 ## License
 
