@@ -1,3 +1,153 @@
+// ===== Screen + Room UI =====
+
+// Screens
+const mainMenu = document.getElementById('mainMenu');
+
+// You have two elements with id="drawingScreen" in index.html.
+// The one that actually contains the canvas is the second one (the one with .container),
+// so we explicitly grab that one.
+let drawingScreen = null;
+(function () {
+    const containerEl = document.querySelector('#drawingScreen .container');
+    if (containerEl && containerEl.closest('.screen')) {
+        drawingScreen = containerEl.closest('.screen');
+    } else {
+        drawingScreen = document.getElementById('drawingScreen');
+    }
+})();
+
+function showScreen(screenEl) {
+    const screens = document.querySelectorAll('.screen');
+    for (const s of screens) {
+        s.classList.remove('active');
+    }
+    if (screenEl) {
+        screenEl.classList.add('active');
+    }
+}
+
+// Modal + buttons
+const createBtn         = document.getElementById('createWhiteboardBtn');
+const createModal       = document.getElementById('createModal');
+const cancelCreateBtn   = document.getElementById('cancelCreateBtn');
+const confirmCreateBtn  = document.getElementById('confirmCreateBtn');
+const whiteboardList    = document.getElementById('whiteboardList');
+const backToMenuBtn     = document.getElementById('backToMenuBtn');
+
+// In-memory rooms (for now – later these will come from the backend)
+let rooms = [];
+let nextRoomId = 1;
+let currentRoom = null;
+
+// Open modal
+if (createBtn && createModal) {
+    createBtn.addEventListener('click', () => {
+        createModal.style.display = 'flex';
+        const nameInput = document.getElementById('whiteboardName');
+        if (nameInput) {
+            nameInput.value = '';
+            nameInput.focus();
+        }
+    });
+}
+
+// Close modal
+if (cancelCreateBtn && createModal) {
+    cancelCreateBtn.addEventListener('click', () => {
+        createModal.style.display = 'none';
+    });
+}
+
+// Create + join room
+if (confirmCreateBtn && createModal) {
+    confirmCreateBtn.addEventListener('click', () => {
+        const nameInput = document.getElementById('whiteboardName');
+        const privacyInput = document.querySelector("input[name='privacy']:checked");
+
+        const name = nameInput ? nameInput.value.trim() : '';
+        const privacy = privacyInput ? privacyInput.value : 'public';
+
+        if (!name) {
+            alert('Please name your whiteboard.');
+            if (nameInput) nameInput.focus();
+            return;
+        }
+
+        const room = {
+            id: String(nextRoomId++),
+            name,
+            privacy
+        };
+
+        rooms.push(room);
+        updateRoomList();
+
+        createModal.style.display = 'none';
+        joinRoom(room.id);
+    });
+}
+
+// Back button on drawing screen
+if (backToMenuBtn) {
+    backToMenuBtn.addEventListener('click', () => {
+        currentRoom = null;
+        showScreen(mainMenu);
+    });
+}
+
+function updateRoomList() {
+    if (!whiteboardList) return;
+
+    whiteboardList.innerHTML = '';
+
+    if (rooms.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'no-whiteboards';
+        empty.innerHTML = '<p>No whiteboards available yet. Create your first one!</p>';
+        whiteboardList.appendChild(empty);
+        return;
+    }
+
+    rooms.forEach(room => {
+        const card = document.createElement('div');
+        card.className = 'whiteboard-card';
+
+        const preview = document.createElement('div');
+        preview.className = 'whiteboard-preview';
+        const placeholder = document.createElement('span');
+        placeholder.className = 'preview-placeholder';
+        placeholder.textContent = '📝';
+        preview.appendChild(placeholder);
+
+        const info = document.createElement('div');
+        info.className = 'whiteboard-info';
+        const title = document.createElement('h3');
+        title.textContent = room.name;
+        const meta = document.createElement('p');
+        meta.textContent = room.privacy === 'public' ? 'Public Room' : 'Private Room';
+        info.appendChild(title);
+        info.appendChild(meta);
+
+        const joinBtn = document.createElement('button');
+        joinBtn.className = 'join-btn';
+        joinBtn.textContent = 'Join';
+        joinBtn.addEventListener('click', () => joinRoom(room.id));
+
+        card.appendChild(preview);
+        card.appendChild(info);
+        card.appendChild(joinBtn);
+
+        whiteboardList.appendChild(card);
+    });
+}
+
+function joinRoom(roomId) {
+    currentRoom = rooms.find(r => r.id === roomId) || null;
+    // Later: send room join to backend / WebSocket here
+    showScreen(drawingScreen);
+}
+
+
 // Multi-user drawing application with WebSocket support
 
 // Initialize Fabric.js canvas
