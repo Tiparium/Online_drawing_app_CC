@@ -1,5 +1,5 @@
 #!/bin/bash
-# S3 Deployment Script by Sathya
+# S3 Deployment Script
 # Deploys drawing app frontend to AWS S3
 
 set -e

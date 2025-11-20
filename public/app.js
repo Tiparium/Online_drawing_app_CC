@@ -1,3 +1,324 @@
+// ===== Screen + Room UI =====
+
+// Screens
+const mainMenu = document.getElementById('mainMenu');
+
+// You have two elements with id="drawingScreen" in index.html.
+// The one that actually contains the canvas is the second one (the one with .container),
+// so we explicitly grab that one.
+let drawingScreen = null;
+(function () {
+    const containerEl = document.querySelector('#drawingScreen .container');
+    if (containerEl && containerEl.closest('.screen')) {
+        drawingScreen = containerEl.closest('.screen');
+    } else {
+        drawingScreen = document.getElementById('drawingScreen');
+    }
+})();
+
+function showScreen(screenEl) {
+    const screens = document.querySelectorAll('.screen');
+    for (const s of screens) {
+        s.classList.remove('active');
+    }
+    if (screenEl) {
+        screenEl.classList.add('active');
+    }
+}
+
+// Modal + buttons
+const createBtn         = document.getElementById('createWhiteboardBtn');
+const createModal       = document.getElementById('createModal');
+const cancelCreateBtn   = document.getElementById('cancelCreateBtn');
+const confirmCreateBtn  = document.getElementById('confirmCreateBtn');
+const whiteboardList    = document.getElementById('whiteboardList');
+const backToMenuBtn     = document.getElementById('backToMenuBtn');
+
+// In-memory rooms (for now – later these will come from the backend)
+let rooms = [];
+let nextRoomId = 1;
+let currentRoom = null;
+const API_BASE = '';
+
+async function apiGetRooms() {
+    const res = await fetch(`${API_BASE}/api/rooms`);
+    if (!res.ok) throw new Error(`rooms fetch failed: ${res.status}`);
+    const data = await res.json();
+    return data.rooms || [];
+}
+
+async function apiCreateRoom(payload) {
+    const res = await fetch(`${API_BASE}/api/rooms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`room create failed: ${res.status}`);
+    return res.json();
+}
+
+async function apiGetRoomStrokes(roomId) {
+    const res = await fetch(`${API_BASE}/api/rooms/${roomId}/strokes`);
+    if (!res.ok) throw new Error(`strokes fetch failed: ${res.status}`);
+    const data = await res.json();
+    return data.strokes || [];
+}
+
+async function apiPersistStroke(roomId, stroke) {
+    try {
+        await fetch(`${API_BASE}/api/rooms/${roomId}/strokes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(stroke)
+        });
+    } catch (err) {
+        console.error('Failed to persist stroke', err);
+    }
+}
+
+// Open modal
+if (createBtn && createModal) {
+    createBtn.addEventListener('click', () => {
+        createModal.style.display = 'flex';
+        const nameInput = document.getElementById('whiteboardName');
+        if (nameInput) {
+            nameInput.value = '';
+            nameInput.focus();
+        }
+    });
+}
+
+// Close modal
+if (cancelCreateBtn && createModal) {
+    cancelCreateBtn.addEventListener('click', () => {
+        createModal.style.display = 'none';
+    });
+}
+
+async function loadRooms() {
+    try {
+        rooms = await apiGetRooms();
+        updateRoomList();
+    } catch (err) {
+        console.error('Failed to load rooms', err);
+        alert('Failed to load rooms from pseudo-S3. Is the server running?');
+    }
+}
+
+// Create + join room
+if (confirmCreateBtn && createModal) {
+    confirmCreateBtn.addEventListener('click', () => {
+        const nameInput = document.getElementById('whiteboardName');
+        const privacyInput = document.querySelector("input[name='privacy']:checked");
+
+        const name = nameInput ? nameInput.value.trim() : '';
+        const privacy = privacyInput ? privacyInput.value : 'public';
+
+        if (!name) {
+            alert('Please name your whiteboard.');
+            if (nameInput) nameInput.focus();
+            return;
+        }
+
+        apiCreateRoom({ name, privacy }).then(room => {
+            rooms.push(room);
+            updateRoomList();
+            createModal.style.display = 'none';
+            joinRoom(room.id);
+        }).catch(err => {
+            console.error('Room creation failed', err);
+            alert('Failed to create room');
+        });
+    });
+}
+
+// Back button on drawing screen
+if (backToMenuBtn) {
+    backToMenuBtn.addEventListener('click', () => {
+        if (currentRoom) {
+            cleanupRoomState(currentRoom.id);
+        }
+        currentRoom = null;
+        showScreen(mainMenu);
+    });
+}
+
+function updateRoomList() {
+    if (!whiteboardList) return;
+
+    whiteboardList.innerHTML = '';
+
+    if (rooms.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'no-whiteboards';
+        empty.innerHTML = '<p>No whiteboards available yet. Create your first one!</p>';
+        whiteboardList.appendChild(empty);
+        return;
+    }
+
+    rooms.forEach(room => {
+        const card = document.createElement('div');
+        card.className = 'whiteboard-card';
+
+        const preview = document.createElement('div');
+        preview.className = 'whiteboard-preview';
+        const placeholder = document.createElement('span');
+        placeholder.className = 'preview-placeholder';
+        placeholder.textContent = '📝';
+        preview.appendChild(placeholder);
+
+        const info = document.createElement('div');
+        info.className = 'whiteboard-info';
+        const title = document.createElement('h3');
+        title.textContent = room.name;
+        const meta = document.createElement('p');
+        meta.textContent = room.privacy === 'public' ? 'Public Room' : 'Private Room';
+        info.appendChild(title);
+        info.appendChild(meta);
+
+        const joinBtn = document.createElement('button');
+        joinBtn.className = 'join-btn';
+        joinBtn.textContent = 'Join';
+        joinBtn.addEventListener('click', () => joinRoom(room.id));
+
+        card.appendChild(preview);
+        card.appendChild(info);
+        card.appendChild(joinBtn);
+
+        whiteboardList.appendChild(card);
+    });
+}
+
+function joinRoom(roomId) {
+    const previousRoomId = currentRoom ? currentRoom.id : null;
+    currentRoom = rooms.find(r => r.id === roomId) || null;
+
+    if (previousRoomId && previousRoomId !== currentRoom.id) {
+        cleanupRoomState(previousRoomId);
+    }
+
+    ensureLocalUser(currentRoom.id);
+    applyRoomSettings(currentRoom.id);
+    renderUsersForActiveRoom();
+    loadRoomStrokes(currentRoom.id).then(() => {
+        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id });
+        showScreen(drawingScreen);
+    }).catch(() => {
+        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id });
+        showScreen(drawingScreen);
+    });
+}
+
+async function loadRoomStrokes(roomId) {
+    try {
+        const strokes = await apiGetRoomStrokes(roomId);
+        canvas.clear();
+        canvas.backgroundColor = '#ffffff';
+        canvas.renderAll();
+        strokes.forEach(stroke => {
+            if (!stroke.path) return;
+            const path = new fabric.Path(stroke.path, {
+                fill: '',
+                stroke: stroke.strokeColor || '#000000',
+                strokeWidth: stroke.strokeWidth || 5,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                selectable: false,
+                evented: false
+            });
+            path.set('userId', stroke.userId || 'unknown');
+            path.set('roomId', roomId);
+            path.set('smoothing', stroke.smoothing || 0);
+            canvas.add(path);
+        });
+        canvas.renderAll();
+    } catch (err) {
+        console.error('Failed to load strokes for room', roomId, err);
+    }
+}
+
+function cleanupRoomState(roomId) {
+    const cursors = getUserCursors(roomId);
+    cursors.forEach(wrapper => wrapper.remove());
+    cursors.clear();
+
+    const simUsers = getSimulatedUsers(roomId);
+    simUsers.forEach(sim => sim.remove());
+    simUsers.clear();
+
+    const remoteMap = getRemoteUsers(roomId);
+    remoteMap.forEach(user => user.remove());
+    remoteMap.clear();
+
+    const usersList = document.getElementById('usersList');
+    if (usersList) {
+        usersList.innerHTML = '';
+    }
+
+    updateSimUserCount();
+}
+
+function renderUsersForActiveRoom() {
+    const usersList = document.getElementById('usersList');
+    if (usersList) {
+        usersList.innerHTML = '';
+    }
+
+    const activeRoomId = getActiveRoomId();
+
+    if (localUser) {
+        localUser.roomId = activeRoomId;
+        localUser.addToUsersPane();
+    }
+
+    const remoteMap = getRemoteUsers(activeRoomId);
+    remoteMap.forEach(user => {
+        user.roomId = activeRoomId;
+        if (!user.isLocal) {
+            user.createCursor();
+        }
+        user.addToUsersPane();
+    });
+
+    updateSimUserCount();
+}
+
+function applyRoomSettings(roomId) {
+    const settings = getRoomSettings(roomId);
+    if (colorPicker) colorPicker.value = settings.color;
+    if (brushSize) {
+        brushSize.value = settings.brushSize;
+        brushSizeValue.textContent = settings.brushSize;
+    }
+    if (smoothingSlider) {
+        smoothingSlider.value = settings.smoothing;
+        smoothingValue.textContent = settings.smoothing;
+    }
+
+    if (localUser && localUser.brush) {
+        localUser.roomId = roomId;
+        localUser.updateSettings(settings.color, settings.brushSize, settings.smoothing, localUser.mode);
+        canvas.freeDrawingBrush = localUser.brush;
+        canvas.freeDrawingBrush.width = settings.brushSize;
+        canvas.freeDrawingBrush.color = settings.color;
+        canvas.freeDrawingBrush.setSmoothingLevel(settings.smoothing);
+    }
+    if (localUser && currentRoom && currentRoom.id === roomId) {
+        sendWebSocketMessage('userSettings', {
+            color: settings.color,
+            brushSize: settings.brushSize,
+            smoothing: settings.smoothing,
+            mode: localUser.mode
+        });
+    }
+}
+
+function updateActiveRoomSettings(partialSettings) {
+    const settings = getRoomSettings();
+    Object.assign(settings, partialSettings);
+}
+
+
 // Multi-user drawing application with WebSocket support
 
 // Initialize Fabric.js canvas
@@ -13,13 +334,52 @@ const canvas = new fabric.Canvas('canvas', {
 
 let currentUserId = null;
 let localUser = null;
-const remoteUsers = new Map(); // userId -> User instance
-const userCursors = new Map(); // userId -> cursor element
-const simulatedUsers = new Map(); // userId -> SimulatedUser instance
+const remoteUsersByRoom = new Map(); // roomId -> Map<userId, User>
+const userCursorsByRoom = new Map(); // roomId -> Map<userId, cursorEl>
+const simulatedUsersByRoom = new Map(); // roomId -> Map<userId, SimulatedUser>
+
+function getActiveRoomId() {
+    return currentRoom ? currentRoom.id : 'lobby';
+}
+
+function getRemoteUsers(roomId = getActiveRoomId()) {
+    if (!remoteUsersByRoom.has(roomId)) {
+        remoteUsersByRoom.set(roomId, new Map());
+    }
+    return remoteUsersByRoom.get(roomId);
+}
+
+function getUserCursors(roomId = getActiveRoomId()) {
+    if (!userCursorsByRoom.has(roomId)) {
+        userCursorsByRoom.set(roomId, new Map());
+    }
+    return userCursorsByRoom.get(roomId);
+}
+
+function getSimulatedUsers(roomId = getActiveRoomId()) {
+    if (!simulatedUsersByRoom.has(roomId)) {
+        simulatedUsersByRoom.set(roomId, new Map());
+    }
+    return simulatedUsersByRoom.get(roomId);
+}
+
+const roomSettings = new Map(); // roomId -> {color, brushSize, smoothing}
+
+function getRoomSettings(roomId = getActiveRoomId()) {
+    if (!roomSettings.has(roomId)) {
+        roomSettings.set(roomId, {
+            color: (defaultRoomSettings && defaultRoomSettings.color) || '#000000',
+            brushSize: (defaultRoomSettings && defaultRoomSettings.brushSize) || 5,
+            smoothing: (defaultRoomSettings && defaultRoomSettings.smoothing) || 0
+        });
+    }
+    return roomSettings.get(roomId);
+}
 
 class User {
-    constructor(userId, userData, isLocal = false) {
+    constructor(userId, userData, isLocal = false, roomId = getActiveRoomId()) {
         this.userId = userId;
+        this.roomId = roomId;
         this.name = userData.name || (isLocal ? 'You' : 'User');
         this.color = userData.color || '#000000';
         this.brushSize = userData.brushSize || 5;
@@ -58,7 +418,13 @@ class User {
     }
     
     createCursor() {
-        if (this.isLocal) return; // Don't show cursor for local user
+        if (this.isLocal || this.roomId !== getActiveRoomId()) return; // Only render for active room
+        const cursors = getUserCursors(this.roomId);
+        const existing = cursors.get(this.userId);
+        if (existing) {
+            existing.remove();
+            cursors.delete(this.userId);
+        }
         
         // Create wrapper for cursor and tooltip
         const wrapper = document.createElement('div');
@@ -79,12 +445,12 @@ class User {
         wrapper.appendChild(tooltip);
         
         document.querySelector('main').appendChild(wrapper);
-        userCursors.set(this.userId, wrapper); // Store wrapper instead of cursor
+        cursors.set(this.userId, wrapper); // Store wrapper instead of cursor
         this.updateCursorPosition();
     }
     
     updateCursorPosition() {
-        const wrapper = userCursors.get(this.userId);
+        const wrapper = getUserCursors(this.roomId).get(this.userId);
         if (wrapper) {
             const canvasEl = canvas.getElement();
             const rect = canvasEl.getBoundingClientRect();
@@ -105,7 +471,7 @@ class User {
             this.brush.setSmoothingLevel(smoothing);
         }
         
-        const wrapper = userCursors.get(this.userId);
+        const wrapper = getUserCursors(this.roomId).get(this.userId);
         if (wrapper) {
             const cursor = wrapper.querySelector('.user-cursor');
             if (cursor) {
@@ -120,6 +486,12 @@ class User {
     addToUsersPane() {
         const usersList = document.getElementById('usersList');
         if (!usersList) return;
+        if (this.roomId !== getActiveRoomId()) return;
+
+        const existingItem = usersList.querySelector(`.user-item[data-user-id="${this.userId}"]`);
+        if (existingItem) {
+            existingItem.remove();
+        }
         
         const userItem = document.createElement('div');
         userItem.className = `user-item ${this.isLocal ? 'local' : ''}`;
@@ -169,11 +541,11 @@ class User {
     }
     
     remove() {
-        const wrapper = userCursors.get(this.userId);
+        const wrapper = getUserCursors(this.roomId).get(this.userId);
         if (wrapper) {
             wrapper.remove();
         }
-        userCursors.delete(this.userId);
+        getUserCursors(this.roomId).delete(this.userId);
         
         // Remove from users pane
         const userItem = document.querySelector(`.user-item[data-user-id="${this.userId}"]`);
@@ -459,26 +831,8 @@ class SmoothedBrush extends fabric.PencilBrush {
                 finalPoints.push({ ...this.drawPos });
             }
             
-            if (this._tempPath) {
-                this.canvas.remove(this._tempPath);
-            }
-            if (finalPoints.length > 1) {
-                const pointsToDraw = this.smoothingLevel > 0 && finalPoints.length > 2 
-                    ? this.smoothPath(finalPoints) 
-                    : finalPoints;
-                const pathData = this.createPathFromPoints(pointsToDraw, this.smoothingLevel > 0);
-                this._tempPath = new fabric.Path(pathData, {
-                    fill: '',
-                    stroke: this.color,
-                    strokeWidth: this.width,
-                    strokeLineCap: 'round',
-                    strokeLineJoin: 'round',
-                    selectable: false,
-                    evented: false
-                });
-                this.canvas.add(this._tempPath);
-                this.canvas.renderAll();
-            }
+            // Removed temp path rendering to avoid read-only issues with AWS S3
+            // Smoothing is cached locally until stroke completion
             
             iteration++;
             requestAnimationFrame(catchUp);
@@ -489,17 +843,17 @@ class SmoothedBrush extends fabric.PencilBrush {
 
     updatePath() {
         if (this.drawnPoints.length < 2) return;
-        
+
         if (this._tempPath) {
             this.canvas.remove(this._tempPath);
             this._tempPath = null;
         }
-        
+
         let pointsToDraw = this.drawnPoints;
         if (this.smoothingLevel > 0 && this.drawnPoints.length > 2) {
             pointsToDraw = this.smoothPath(this.drawnPoints);
         }
-        
+
         const pathData = this.createPathFromPoints(pointsToDraw, this.smoothingLevel > 0);
         this._tempPath = new fabric.Path(pathData, {
             fill: '',
@@ -508,9 +862,11 @@ class SmoothedBrush extends fabric.PencilBrush {
             strokeLineCap: 'round',
             strokeLineJoin: 'round',
             selectable: false,
-            evented: false
+            evented: false,
+            // Mark as local-only to prevent S3 sync issues
+            localOnly: true
         });
-        
+
         this.canvas.add(this._tempPath);
         this.canvas.renderAll();
     }
@@ -538,9 +894,43 @@ class SmoothedBrush extends fabric.PencilBrush {
             selectable: false,
             evented: false
         });
+        const roomId = getActiveRoomId();
+        finalPath.set('roomId', roomId);
+        finalPath.set('smoothing', this.smoothingLevel);
+        finalPath.set('userId', localUser ? localUser.userId : 'local');
+        
+        // Cache stroke locally for this room so smoothing adjustments exist before persistence
+        const cache = getStrokeCache(roomId);
+        cache.pending.push({
+            pathData,
+            color: this.color,
+            strokeWidth: this.width,
+            smoothing: this.smoothingLevel,
+            userId: localUser ? localUser.userId : 'local',
+            timestamp: Date.now()
+        });
         
         this.canvas.add(finalPath);
         this.canvas.renderAll();
+
+        // Only send once stroke is finalized (after momentum finishes)
+        if (localUser && currentRoom) {
+            sendWebSocketMessage('drawingUpdate', {
+                path: pathData,
+                action: 'add',
+                roomId,
+                smoothing: this.smoothingLevel,
+                strokeColor: this.color,
+                strokeWidth: this.width
+            });
+            apiPersistStroke(roomId, {
+                path: pathData,
+                strokeColor: this.color,
+                strokeWidth: this.width,
+                smoothing: this.smoothingLevel,
+                userId: localUser.userId
+            });
+        }
         
         return finalPath;
     }
@@ -615,63 +1005,45 @@ let ws = null;
 let isConnected = false;
 
 function connectWebSocket() {
-    // Skip WebSocket connection if on S3 (static hosting)
-    if (window.location.hostname.includes('s3')) {
-        console.log('Running on S3 - WebSocket disabled (local mode only)');
-        // Create a fake local user for standalone mode
-        if (!localUser) {
-            currentUserId = 'local-' + Math.random().toString(36).substr(2, 9);
-            localUser = new User(currentUserId, {
-                name: 'You',
-                color: '#000000',
-                brushSize: 5,
-                smoothing: 0,
-                mode: 'draw',
-                cursor: { x: 0, y: 0 }
-            }, true);
-            setupLocalUser();
-        }
-        return;
-    }
-    
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
     
-    try {
-        ws = new WebSocket(wsUrl);
-        
-        ws.onopen = () => {
-            console.log('WebSocket connected');
-            isConnected = true;
-        };
-        
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                handleWebSocketMessage(data);
-            } catch (error) {
-                console.error('Error parsing WebSocket message:', error);
-            }
-        };
-        
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-        
-        ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            isConnected = false;
-            // Don't reconnect on S3
-            if (!window.location.hostname.includes('s3')) {
-                setTimeout(connectWebSocket, 3000);
-            }
-        };
-    } catch (error) {
-        console.error('Failed to create WebSocket:', error);
-    }
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+        console.log('WebSocket connected');
+        isConnected = true;
+    };
+    
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    };
+    
+    ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+    };
+    
+    ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        isConnected = false;
+        // Attempt to reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
+    };
 }
 
 function handleWebSocketMessage(data) {
+    const targetRoomId = data.roomId || getActiveRoomId();
+    const activeRoomId = getActiveRoomId();
+    const isRoomScoped = ['existingUsers', 'existingUsersInRoom', 'userJoined', 'userLeft', 'cursorMove', 'drawingUpdate', 'userSettings'].includes(data.type);
+    if (isRoomScoped && data.roomId && data.roomId !== activeRoomId) {
+        return;
+    }
+
     switch (data.type) {
         case 'userConnected':
             currentUserId = data.userId;
@@ -679,7 +1051,7 @@ function handleWebSocketMessage(data) {
                 name: 'You',
                 ...data.userData
             };
-            localUser = new User(data.userId, localUserData, true);
+            localUser = new User(data.userId, localUserData, true, activeRoomId);
             setupLocalUser();
             break;
             
@@ -690,33 +1062,53 @@ function handleWebSocketMessage(data) {
                         name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
                         ...user.userData
                     };
-                    const remoteUser = new User(user.userId, remoteUserData, false);
-                    remoteUsers.set(user.userId, remoteUser);
+                    const remoteUser = new User(user.userId, remoteUserData, false, targetRoomId);
+                    getRemoteUsers(targetRoomId).set(user.userId, remoteUser);
                 }
             });
             break;
+        
+        case 'existingUsersInRoom':
+            if (data.roomId !== activeRoomId) break;
+            data.users.forEach(user => {
+                if (user.userId !== currentUserId) {
+                    if (getRemoteUsers(data.roomId).has(user.userId)) return;
+                    const remoteUserData = {
+                        name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
+                        ...user.userData
+                    };
+                    const remoteUser = new User(user.userId, remoteUserData, false, data.roomId);
+                    getRemoteUsers(data.roomId).set(user.userId, remoteUser);
+                }
+            });
+            renderUsersForActiveRoom();
+            break;
             
         case 'userJoined':
-            if (data.userId !== currentUserId) {
+            if (data.userId !== currentUserId && data.roomId === activeRoomId) {
+                if (getRemoteUsers(targetRoomId).has(data.userId)) break;
                 const remoteUserData = {
                     name: data.userData.name || `User ${data.userId.substring(0, 8)}`,
                     ...data.userData
                 };
-                const remoteUser = new User(data.userId, remoteUserData, false);
-                remoteUsers.set(data.userId, remoteUser);
+                const remoteUser = new User(data.userId, remoteUserData, false, targetRoomId);
+                getRemoteUsers(targetRoomId).set(data.userId, remoteUser);
             }
+            renderUsersForActiveRoom();
             break;
             
         case 'userLeft':
-            const user = remoteUsers.get(data.userId);
+            if (data.roomId && data.roomId !== activeRoomId) break;
+            const user = getRemoteUsers(targetRoomId).get(data.userId);
             if (user) {
                 user.remove();
-                remoteUsers.delete(data.userId);
+                getRemoteUsers(targetRoomId).delete(data.userId);
+                renderUsersForActiveRoom();
             }
             break;
             
         case 'cursorMove':
-            const remoteUser = remoteUsers.get(data.userId);
+            const remoteUser = getRemoteUsers(targetRoomId).get(data.userId);
             if (remoteUser) {
                 remoteUser.cursor = data.cursor;
                 remoteUser.updateCursorPosition();
@@ -724,14 +1116,19 @@ function handleWebSocketMessage(data) {
             break;
             
         case 'drawingUpdate':
-            handleRemoteDrawing(data.userId, data.path, data.action);
+            handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing);
             break;
     }
 }
 
 function sendWebSocketMessage(type, data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type, ...data }));
+        const payload = {
+            type,
+            roomId: currentRoom ? currentRoom.id : null,
+            ...data
+        };
+        ws.send(JSON.stringify(payload));
     }
 }
 
@@ -739,21 +1136,24 @@ function sendWebSocketMessage(type, data) {
 // REMOTE DRAWING HANDLING
 // ============================================================================
 
-function handleRemoteDrawing(userId, pathData, action) {
-    const user = remoteUsers.get(userId);
+function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0) {
+    if (roomId !== getActiveRoomId()) return;
+    const user = getRemoteUsers(roomId).get(userId);
     if (!user) return;
     
     if (action === 'add' && pathData) {
         const path = new fabric.Path(pathData, {
             fill: '',
-            stroke: user.color,
-            strokeWidth: user.brushSize,
+            stroke: strokeColor || user.color,
+            strokeWidth: strokeWidth || user.brushSize,
             strokeLineCap: 'round',
             strokeLineJoin: 'round',
             selectable: false,
             evented: false
         });
         path.set('userId', userId);
+        path.set('roomId', roomId);
+        path.set('smoothing', smoothing || user.smoothing || 0);
         canvas.add(path);
         canvas.renderAll();
     }
@@ -767,7 +1167,14 @@ let currentMode = 'draw';
 
 function setupLocalUser() {
     if (!localUser) return;
-    
+
+    updateActiveRoomSettings({
+        color: localUser.color,
+        brushSize: localUser.brushSize,
+        smoothing: localUser.smoothing
+    });
+    applyRoomSettings(getActiveRoomId());
+
     canvas.freeDrawingBrush = localUser.brush;
     canvas.freeDrawingBrush.width = localUser.brushSize;
     canvas.freeDrawingBrush.color = localUser.color;
@@ -780,19 +1187,6 @@ function setupLocalUser() {
         mode: localUser.mode
     });
 }
-
-// Track local drawing to send to other users
-let currentPath = null;
-
-canvas.on('path:created', (e) => {
-    if (e.path && localUser) {
-        const pathData = e.path.path;
-        sendWebSocketMessage('drawingUpdate', {
-            path: pathData,
-            action: 'add'
-        });
-    }
-});
 
 // ============================================================================
 // UI SETUP
@@ -812,6 +1206,26 @@ const smoothingValue = document.getElementById('smoothingValue');
 const saveBtn = document.getElementById('saveBtn');
 const loadBtn = document.getElementById('loadBtn');
 const fileInput = document.getElementById('fileInput');
+const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
+let defaultRoomSettings = null;
+
+function initDefaultRoomSettings() {
+    if (defaultRoomSettings) return;
+    defaultRoomSettings = {
+        color: colorPicker ? colorPicker.value : '#000000',
+        brushSize: brushSize ? parseInt(brushSize.value, 10) || 5 : 5,
+        smoothing: smoothingSlider ? parseInt(smoothingSlider.value, 10) || 0 : 0
+    };
+}
+
+initDefaultRoomSettings();
+
+function getStrokeCache(roomId = getActiveRoomId()) {
+    if (!strokeCachesByRoom.has(roomId)) {
+        strokeCachesByRoom.set(roomId, { pending: [] });
+    }
+    return strokeCachesByRoom.get(roomId);
+}
 
 // Tool selection
 function setMode(mode) {
@@ -850,7 +1264,8 @@ textBtn.addEventListener('click', () => setMode('text'));
 brushSize.addEventListener('input', (e) => {
     const size = parseInt(e.target.value);
     brushSizeValue.textContent = size;
-    if (localUser) {
+    updateActiveRoomSettings({ brushSize: size });
+    if (localUser && localUser.brush) {
         localUser.brushSize = size;
         localUser.brush.width = size;
         sendWebSocketMessage('userSettings', {
@@ -864,7 +1279,8 @@ brushSize.addEventListener('input', (e) => {
 
 colorPicker.addEventListener('input', (e) => {
     const color = e.target.value;
-    if (localUser) {
+    updateActiveRoomSettings({ color });
+    if (localUser && localUser.brush) {
         localUser.color = color;
         localUser.brush.color = color;
         sendWebSocketMessage('userSettings', {
@@ -879,7 +1295,8 @@ colorPicker.addEventListener('input', (e) => {
 smoothingSlider.addEventListener('input', (e) => {
     const smoothing = parseInt(e.target.value);
     smoothingValue.textContent = smoothing;
-    if (localUser) {
+    updateActiveRoomSettings({ smoothing });
+    if (localUser && localUser.brush) {
         localUser.smoothing = smoothing;
         localUser.brush.setSmoothingLevel(smoothing);
         sendWebSocketMessage('userSettings', {
@@ -893,7 +1310,7 @@ smoothingSlider.addEventListener('input', (e) => {
 
 // Cursor tracking
 canvas.on('mouse:move', (e) => {
-    if (localUser && isConnected) {
+    if (localUser && isConnected && currentRoom) {
         const pointer = canvas.getPointer(e.e);
         localUser.cursor = { x: pointer.x, y: pointer.y };
         sendWebSocketMessage('cursorMove', {
@@ -938,10 +1355,25 @@ function startRect(o) {
         canvas.off('mouse:move');
         canvas.off('mouse:down', startRect);
         if (rect.path) {
-            sendWebSocketMessage('drawingUpdate', {
+            const roomId = currentRoom ? currentRoom.id : null;
+            const payload = {
                 path: rect.path,
-                action: 'add'
-            });
+                action: 'add',
+                roomId,
+                strokeColor: rect.stroke,
+                strokeWidth: rect.strokeWidth,
+                smoothing: localUser ? localUser.smoothing : 0
+            };
+            sendWebSocketMessage('drawingUpdate', payload);
+            if (roomId) {
+                apiPersistStroke(roomId, {
+                    path: rect.path,
+                    strokeColor: rect.stroke,
+                    strokeWidth: rect.strokeWidth,
+                    smoothing: localUser ? localUser.smoothing : 0,
+                    userId: localUser ? localUser.userId : 'local'
+                });
+            }
         }
     });
 }
@@ -982,10 +1414,25 @@ function startCircle(o) {
         canvas.off('mouse:move');
         canvas.off('mouse:down', startCircle);
         if (circle.path) {
-            sendWebSocketMessage('drawingUpdate', {
+            const roomId = currentRoom ? currentRoom.id : null;
+            const payload = {
                 path: circle.path,
-                action: 'add'
-            });
+                action: 'add',
+                roomId,
+                strokeColor: circle.stroke,
+                strokeWidth: circle.strokeWidth,
+                smoothing: localUser ? localUser.smoothing : 0
+            };
+            sendWebSocketMessage('drawingUpdate', payload);
+            if (roomId) {
+                apiPersistStroke(roomId, {
+                    path: circle.path,
+                    strokeColor: circle.stroke,
+                    strokeWidth: circle.strokeWidth,
+                    smoothing: localUser ? localUser.smoothing : 0,
+                    userId: localUser ? localUser.userId : 'local'
+                });
+            }
         }
     });
 }
@@ -1068,27 +1515,35 @@ let debugParams = {
     settingsFreq: 0.05
 };
 
-debugBtn.addEventListener('click', () => {
-    debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
-});
+if (debugBtn && debugPanel) {
+    debugBtn.addEventListener('click', () => {
+        debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+    });
+}
 
-simSpeedSlider.addEventListener('input', (e) => {
-    debugParams.simSpeed = parseInt(e.target.value);
-    simSpeedValue.textContent = debugParams.simSpeed;
-    updateSimUsers();
-});
+if (simSpeedSlider && simSpeedValue) {
+    simSpeedSlider.addEventListener('input', (e) => {
+        debugParams.simSpeed = parseInt(e.target.value);
+        simSpeedValue.textContent = debugParams.simSpeed;
+        updateSimUsers();
+    });
+}
 
-drawFreqSlider.addEventListener('input', (e) => {
-    debugParams.drawFreq = parseFloat(e.target.value);
-    drawFreqValue.textContent = debugParams.drawFreq;
-    updateSimUsers();
-});
+if (drawFreqSlider && drawFreqValue) {
+    drawFreqSlider.addEventListener('input', (e) => {
+        debugParams.drawFreq = parseFloat(e.target.value);
+        drawFreqValue.textContent = debugParams.drawFreq;
+        updateSimUsers();
+    });
+}
 
-settingsFreqSlider.addEventListener('input', (e) => {
-    debugParams.settingsFreq = parseFloat(e.target.value);
-    settingsFreqValue.textContent = debugParams.settingsFreq;
-    updateSimUsers();
-});
+if (settingsFreqSlider && settingsFreqValue) {
+    settingsFreqSlider.addEventListener('input', (e) => {
+        debugParams.settingsFreq = parseFloat(e.target.value);
+        settingsFreqValue.textContent = debugParams.settingsFreq;
+        updateSimUsers();
+    });
+}
 
 // Historical artist names for simulated users
 const HISTORICAL_ARTISTS = [
@@ -1107,8 +1562,9 @@ const HISTORICAL_ARTISTS = [
 // ============================================================================
 
 class SimulatedUser {
-    constructor(userId) {
+    constructor(userId, roomId = getActiveRoomId()) {
         this.userId = userId;
+        this.roomId = roomId;
         this.name = this.getRandomArtistName();
         this.x = Math.random() * canvas.width;
         this.y = Math.random() * canvas.height;
@@ -1139,8 +1595,8 @@ class SimulatedUser {
             mode: 'draw',
             cursor: { x: this.x, y: this.y }
         };
-        const user = new User(userId, userData, false);
-        remoteUsers.set(userId, user);
+        const user = new User(userId, userData, false, this.roomId);
+        getRemoteUsers(this.roomId).set(userId, user);
 
         // Initialize tracking variables for stuck detection
         this.lastMoveTime = Date.now();
@@ -1151,7 +1607,7 @@ class SimulatedUser {
     }
     
     getRandomArtistName() {
-        const usedNames = Array.from(remoteUsers.values()).map(u => u.name);
+        const usedNames = Array.from(getRemoteUsers(this.roomId).values()).map(u => u.name);
         const availableNames = HISTORICAL_ARTISTS.filter(name => !usedNames.includes(name));
         if (availableNames.length === 0) {
             // If all names are used, add a number
@@ -1172,7 +1628,7 @@ class SimulatedUser {
             this.brushSize = Math.floor(Math.random() * 20) + 5;
             this.smoothing = Math.floor(Math.random() * 100);
             
-            const user = remoteUsers.get(this.userId);
+            const user = getRemoteUsers(this.roomId).get(this.userId);
             if (user) {
                 user.updateSettings(this.color, this.brushSize, this.smoothing, 'draw');
             }
@@ -1181,7 +1637,7 @@ class SimulatedUser {
     
     simulate() {
         try {
-            const user = remoteUsers.get(this.userId);
+            const user = getRemoteUsers(this.roomId).get(this.userId);
             if (!user) {
                 console.warn(`SimulatedUser ${this.userId}: User not found, removing`);
                 this.remove();
@@ -1470,7 +1926,7 @@ class SimulatedUser {
         }
         
         // Create path using same logic as SmoothedBrush
-        const user = remoteUsers.get(this.userId);
+        const user = getRemoteUsers(this.roomId).get(this.userId);
         if (!user) return;
         
         // Apply smoothing if needed
@@ -1528,13 +1984,26 @@ class SimulatedUser {
             evented: false
         });
         path.set('userId', this.userId);
+        path.set('roomId', this.roomId);
         canvas.add(path);
         canvas.renderAll();
         
         // Send to other users
-        sendWebSocketMessage('drawingUpdate', {
+        const payload = {
             path: pathData,
-            action: 'add'
+            action: 'add',
+            roomId: this.roomId,
+            smoothing: user.smoothing || 0,
+            strokeColor: user.color,
+            strokeWidth: user.brushSize
+        };
+        sendWebSocketMessage('drawingUpdate', payload);
+        apiPersistStroke(this.roomId, {
+            path: pathData,
+            strokeColor: user.color,
+            strokeWidth: user.brushSize,
+            smoothing: user.smoothing || 0,
+            userId: this.userId
         });
         
         this.isDrawing = false;
@@ -1542,43 +2011,54 @@ class SimulatedUser {
     }
     
     remove() {
-        const user = remoteUsers.get(this.userId);
+        const user = getRemoteUsers(this.roomId).get(this.userId);
         if (user) {
             user.remove();
-            remoteUsers.delete(this.userId);
+            getRemoteUsers(this.roomId).delete(this.userId);
         }
-        simulatedUsers.delete(this.userId);
+        getSimulatedUsers(this.roomId).delete(this.userId);
         updateSimUserCount();
     }
 }
 
 function updateSimUsers() {
-    simulatedUsers.forEach(sim => {
+    const activeRoomId = getActiveRoomId();
+    getSimulatedUsers(activeRoomId).forEach(sim => {
         // Parameters are used in simulate() method
     });
 }
 
-addSimUserBtn.addEventListener('click', () => {
-    const userId = 'sim_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const simUser = new SimulatedUser(userId);
-    simulatedUsers.set(userId, simUser);
-    updateSimUserCount();
-});
+if (addSimUserBtn) {
+    addSimUserBtn.addEventListener('click', () => {
+        const userId = 'sim_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const activeRoomId = getActiveRoomId();
+        const simUser = new SimulatedUser(userId, activeRoomId);
+        getSimulatedUsers(activeRoomId).set(userId, simUser);
+        updateSimUserCount();
+    });
+}
 
-removeSimUserBtn.addEventListener('click', () => {
-    if (simulatedUsers.size > 0) {
-        const firstUserId = simulatedUsers.keys().next().value;
-        const simUser = simulatedUsers.get(firstUserId);
-        if (simUser) {
-            simUser.remove();
-            simulatedUsers.delete(firstUserId);
-            updateSimUserCount();
+if (removeSimUserBtn) {
+    removeSimUserBtn.addEventListener('click', () => {
+        const activeRoomId = getActiveRoomId();
+        const simUsers = getSimulatedUsers(activeRoomId);
+        if (simUsers.size > 0) {
+            const firstUserId = simUsers.keys().next().value;
+            const simUser = simUsers.get(firstUserId);
+            if (simUser) {
+                simUser.remove();
+                simUsers.delete(firstUserId);
+                updateSimUserCount();
+            }
         }
-    }
-});
+    });
+}
 
 function updateSimUserCount() {
-    simUserCount.textContent = `Simulated Users: ${simulatedUsers.size}`;
+    if (!simUserCount) return;
+    const activeRoomId = getActiveRoomId();
+    const simUsers = getSimulatedUsers(activeRoomId);
+    simUserCount.textContent = `Simulated Users: ${simUsers.size}`;
 }
 
 // ============================================================================
@@ -1603,6 +2083,30 @@ toggleUsersPane.addEventListener('click', () => {
 // INITIALIZATION
 // ============================================================================
 
-setMode('draw');
-connectWebSocket();
+async function initApp() {
+    setMode('draw');
+    connectWebSocket();
+    await loadRooms();
+}
 
+initApp();
+
+// Fallback local user for single-player/offline scenarios
+function ensureLocalUser(roomId = getActiveRoomId()) {
+    if (localUser) {
+        localUser.roomId = roomId;
+        return localUser;
+    }
+    const settings = getRoomSettings(roomId);
+    const userData = {
+        name: 'You',
+        color: settings.color,
+        brushSize: settings.brushSize,
+        smoothing: settings.smoothing,
+        mode: currentMode,
+        cursor: { x: 0, y: 0 }
+    };
+    localUser = new User(`local_${Date.now()}`, userData, true, roomId);
+    setupLocalUser();
+    return localUser;
+}
