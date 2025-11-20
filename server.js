@@ -117,30 +117,12 @@ wss.on('connection', (ws) => {
 
    users.set(userId, { ws, userData, roomId: null });
 
-   // Send current state to new user
-   ws.send(JSON.stringify({
-      type: 'userConnected',
-      userId,
-      userData
-   }));
-
-   // Send all existing users to new user
-   const existingUsers = Array.from(users.entries()).map(([id, user]) => ({
-      userId: id,
-      userData: user.userData
-   }));
-   ws.send(JSON.stringify({
-      type: 'existingUsers',
-      users: existingUsers.filter(u => u.userId !== userId)
-   }));
-
-   // Broadcast new user to all others
-   broadcast({
-      type: 'userJoined',
-      userId,
-      userData,
-      roomId: null
-   }, userId);
+// Send current state to new user (no room yet)
+ws.send(JSON.stringify({
+   type: 'userConnected',
+   userId,
+   userData
+}));
 
    ws.on('message', (message) => {
       try {
@@ -151,22 +133,37 @@ wss.on('connection', (ws) => {
                const { roomId } = data;
                if (users.has(userId)) {
                   users.get(userId).roomId = roomId;
+                  // Send existing users in this room to the joining user
+                  const roomUsers = Array.from(users.entries())
+                     .filter(([id, u]) => id !== userId && u.roomId === roomId)
+                     .map(([id, u]) => ({ userId: id, userData: u.userData, roomId }));
+
                   ws.send(JSON.stringify({ type: 'roomJoined', roomId }));
+                  ws.send(JSON.stringify({ type: 'existingUsersInRoom', roomId, users: roomUsers }));
+
+                  // Notify others in the room
+                  broadcast({
+                     type: 'userJoined',
+                     userId,
+                     userData,
+                     roomId
+                  }, userId, roomId);
                }
                break;
             }
 
             case 'cursorMove':
-               if (users.has(userId)) {
-                  users.get(userId).userData.cursor = data.cursor;
+                if (users.has(userId)) {
+                   users.get(userId).userData.cursor = data.cursor;
+                  const roomId = users.get(userId).roomId;
                   broadcast({
                      type: 'cursorMove',
                      userId,
                      cursor: data.cursor,
-                     roomId: users.get(userId).roomId
-                  }, userId, users.get(userId).roomId);
-               }
-               break;
+                     roomId
+                  }, userId, roomId);
+                }
+                break;
 
             case 'drawingUpdate':
 
@@ -202,6 +199,13 @@ wss.on('connection', (ws) => {
                   users.get(userId).userData.brushSize = data.brushSize;
                   users.get(userId).userData.smoothing = data.smoothing;
                   users.get(userId).userData.mode = data.mode;
+                  const roomId = users.get(userId).roomId;
+                  broadcast({
+                     type: 'userSettings',
+                     userId,
+                     userData: users.get(userId).userData,
+                     roomId
+                  }, userId, roomId);
                }
                break;
         }
@@ -215,8 +219,8 @@ wss.on('connection', (ws) => {
       broadcast({
          type: 'userLeft',
          userId,
-         roomId: null
-      });
+         roomId: users.get(userId)?.roomId || null
+      }, userId, users.get(userId)?.roomId || null);
    });
 });
 

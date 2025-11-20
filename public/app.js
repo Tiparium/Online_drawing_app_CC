@@ -419,6 +419,12 @@ class User {
     
     createCursor() {
         if (this.isLocal || this.roomId !== getActiveRoomId()) return; // Only render for active room
+        const cursors = getUserCursors(this.roomId);
+        const existing = cursors.get(this.userId);
+        if (existing) {
+            existing.remove();
+            cursors.delete(this.userId);
+        }
         
         // Create wrapper for cursor and tooltip
         const wrapper = document.createElement('div');
@@ -439,7 +445,7 @@ class User {
         wrapper.appendChild(tooltip);
         
         document.querySelector('main').appendChild(wrapper);
-        getUserCursors(this.roomId).set(this.userId, wrapper); // Store wrapper instead of cursor
+        cursors.set(this.userId, wrapper); // Store wrapper instead of cursor
         this.updateCursorPosition();
     }
     
@@ -1033,7 +1039,7 @@ function connectWebSocket() {
 function handleWebSocketMessage(data) {
     const targetRoomId = data.roomId || getActiveRoomId();
     const activeRoomId = getActiveRoomId();
-    const isRoomScoped = ['existingUsers', 'userJoined', 'userLeft', 'cursorMove', 'drawingUpdate', 'userSettings'].includes(data.type);
+    const isRoomScoped = ['existingUsers', 'existingUsersInRoom', 'userJoined', 'userLeft', 'cursorMove', 'drawingUpdate', 'userSettings'].includes(data.type);
     if (isRoomScoped && data.roomId && data.roomId !== activeRoomId) {
         return;
     }
@@ -1061,9 +1067,26 @@ function handleWebSocketMessage(data) {
                 }
             });
             break;
+        
+        case 'existingUsersInRoom':
+            if (data.roomId !== activeRoomId) break;
+            data.users.forEach(user => {
+                if (user.userId !== currentUserId) {
+                    if (getRemoteUsers(data.roomId).has(user.userId)) return;
+                    const remoteUserData = {
+                        name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
+                        ...user.userData
+                    };
+                    const remoteUser = new User(user.userId, remoteUserData, false, data.roomId);
+                    getRemoteUsers(data.roomId).set(user.userId, remoteUser);
+                }
+            });
+            renderUsersForActiveRoom();
+            break;
             
         case 'userJoined':
-            if (data.userId !== currentUserId) {
+            if (data.userId !== currentUserId && data.roomId === activeRoomId) {
+                if (getRemoteUsers(targetRoomId).has(data.userId)) break;
                 const remoteUserData = {
                     name: data.userData.name || `User ${data.userId.substring(0, 8)}`,
                     ...data.userData
@@ -1071,13 +1094,16 @@ function handleWebSocketMessage(data) {
                 const remoteUser = new User(data.userId, remoteUserData, false, targetRoomId);
                 getRemoteUsers(targetRoomId).set(data.userId, remoteUser);
             }
+            renderUsersForActiveRoom();
             break;
             
         case 'userLeft':
+            if (data.roomId && data.roomId !== activeRoomId) break;
             const user = getRemoteUsers(targetRoomId).get(data.userId);
             if (user) {
                 user.remove();
                 getRemoteUsers(targetRoomId).delete(data.userId);
+                renderUsersForActiveRoom();
             }
             break;
             
