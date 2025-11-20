@@ -459,26 +459,8 @@ class SmoothedBrush extends fabric.PencilBrush {
                 finalPoints.push({ ...this.drawPos });
             }
             
-            if (this._tempPath) {
-                this.canvas.remove(this._tempPath);
-            }
-            if (finalPoints.length > 1) {
-                const pointsToDraw = this.smoothingLevel > 0 && finalPoints.length > 2 
-                    ? this.smoothPath(finalPoints) 
-                    : finalPoints;
-                const pathData = this.createPathFromPoints(pointsToDraw, this.smoothingLevel > 0);
-                this._tempPath = new fabric.Path(pathData, {
-                    fill: '',
-                    stroke: this.color,
-                    strokeWidth: this.width,
-                    strokeLineCap: 'round',
-                    strokeLineJoin: 'round',
-                    selectable: false,
-                    evented: false
-                });
-                this.canvas.add(this._tempPath);
-                this.canvas.renderAll();
-            }
+            // Removed temp path rendering to avoid read-only issues with AWS S3
+            // Smoothing is cached locally until stroke completion
             
             iteration++;
             requestAnimationFrame(catchUp);
@@ -489,17 +471,17 @@ class SmoothedBrush extends fabric.PencilBrush {
 
     updatePath() {
         if (this.drawnPoints.length < 2) return;
-        
+
         if (this._tempPath) {
             this.canvas.remove(this._tempPath);
             this._tempPath = null;
         }
-        
+
         let pointsToDraw = this.drawnPoints;
         if (this.smoothingLevel > 0 && this.drawnPoints.length > 2) {
             pointsToDraw = this.smoothPath(this.drawnPoints);
         }
-        
+
         const pathData = this.createPathFromPoints(pointsToDraw, this.smoothingLevel > 0);
         this._tempPath = new fabric.Path(pathData, {
             fill: '',
@@ -508,9 +490,11 @@ class SmoothedBrush extends fabric.PencilBrush {
             strokeLineCap: 'round',
             strokeLineJoin: 'round',
             selectable: false,
-            evented: false
+            evented: false,
+            // Mark as local-only to prevent S3 sync issues
+            localOnly: true
         });
-        
+
         this.canvas.add(this._tempPath);
         this.canvas.renderAll();
     }
