@@ -12,26 +12,6 @@ body {
     overflow: hidden;
 }
 
-.backend-warning {
-    position: fixed;
-    top: 14px;
-    right: 14px;
-    z-index: 2000;
-    background: #2d1b1b;
-    color: #ffd6d6;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 10px 14px;
-    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
-    max-width: 340px;
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-.backend-warning.hidden {
-    display: none;
-}
-
 /* Screen management */
 .screen {
     display: none;

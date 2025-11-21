@@ -38,6 +38,18 @@ const backToMenuBtn     = document.getElementById('backToMenuBtn');
 let rooms = [];
 let nextRoomId = 1;
 let currentRoom = null;
+
+function normalizeRoom(room) {
+    if (!room) return null;
+    const id = room.roomId || room.id;
+    return {
+        id,
+        roomId: id,
+        name: room.name || 'Untitled',
+        privacy: room.privacy || 'public',
+        createdAt: room.createdAt || Date.now()
+    };
+}
 // Allow overriding API/WS base via global for hosted frontends (e.g., S3 + separate backend)
 const BOOT_CONFIG = (typeof window !== 'undefined' && window.__CONFIG) ? window.__CONFIG : {};
 const API_BASE_RAW = (typeof window !== 'undefined' && (window.__API_BASE ?? BOOT_CONFIG.API_BASE)) ? (window.__API_BASE ?? BOOT_CONFIG.API_BASE) : '';
@@ -45,28 +57,11 @@ const WS_BASE_RAW = (typeof window !== 'undefined' && (window.__WS_BASE ?? BOOT_
 const apiBaseNormalized = API_BASE_RAW.endsWith('/') ? API_BASE_RAW.slice(0, -1) : API_BASE_RAW;
 const wsBaseNormalized = WS_BASE_RAW && WS_BASE_RAW.endsWith('/') ? WS_BASE_RAW.slice(0, -1) : WS_BASE_RAW;
 
-const backendWarningEl = document.getElementById('backendWarning');
-function setBackendWarning(message) {
-    if (!backendWarningEl) return;
-    backendWarningEl.textContent = message;
-    backendWarningEl.classList.remove('hidden');
-}
-function clearBackendWarning() {
-    if (!backendWarningEl) return;
-    backendWarningEl.textContent = '';
-    backendWarningEl.classList.add('hidden');
-}
-
-function backendConfigState() {
-    const hasConfig = Boolean(apiBaseNormalized || wsBaseNormalized);
-    return { hasConfig, apiBaseNormalized, wsBaseNormalized };
-}
-
 async function apiGetRooms() {
     const res = await fetch(`${apiBaseNormalized}/api/rooms`);
     if (!res.ok) throw new Error(`rooms fetch failed: ${res.status}`);
     const data = await res.json();
-    return data.rooms || [];
+    return (data.rooms || []).map(normalizeRoom).filter(Boolean);
 }
 
 async function apiCreateRoom(payload) {
@@ -76,7 +71,8 @@ async function apiCreateRoom(payload) {
         body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error(`room create failed: ${res.status}`);
-    return res.json();
+    const created = await res.json();
+    return normalizeRoom(created);
 }
 
 async function apiGetRoomStrokes(roomId) {
@@ -98,6 +94,15 @@ async function apiPersistStroke(roomId, stroke) {
     }
 }
 
+// Persist strokes via REST only when WebSocket persistence is unavailable (avoids double writes)
+async function persistStrokeFallback(roomId, stroke) {
+    if (!roomId || !stroke) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        return; // WebSocket path already persists in backend
+    }
+    await apiPersistStroke(roomId, stroke);
+}
+
 async function loadDeployCount() {
     if (!deployCounterEl) return;
     try {
@@ -106,16 +111,9 @@ async function loadDeployCount() {
         const data = await res.json();
         const count = Number(data.count);
         deployCounterEl.textContent = `Deploy #${Number.isFinite(count) ? count : 0}`;
-        clearBackendWarning();
     } catch (err) {
         console.error('Failed to load deploy count', err);
         deployCounterEl.textContent = 'Deploy #?';
-        const { hasConfig } = backendConfigState();
-        if (!hasConfig) {
-            setBackendWarning('No backend configured. Set API_BASE/WS_BASE in public/config.js (or via deploy.sh) so deploy count and whiteboards can load.');
-        } else {
-            setBackendWarning('Could not reach the backend for deploy count. Verify API_BASE/WS_BASE and backend availability.');
-        }
     }
 }
 
@@ -142,15 +140,8 @@ async function loadRooms() {
     try {
         rooms = await apiGetRooms();
         updateRoomList();
-        clearBackendWarning();
     } catch (err) {
         console.error('Failed to load rooms', err);
-        const { hasConfig } = backendConfigState();
-        if (!hasConfig) {
-            setBackendWarning('No backend configured. Set API_BASE/WS_BASE in public/config.js (or via deploy.sh) so whiteboards can load.');
-        } else {
-            setBackendWarning('Could not reach the backend to load whiteboards. Check your API_BASE/WS_BASE or backend health.');
-        }
         alert('Failed to load rooms from backend.');
     }
 }
@@ -174,7 +165,7 @@ if (confirmCreateBtn && createModal) {
             rooms.push(room);
             updateRoomList();
             createModal.style.display = 'none';
-            joinRoom(room.id);
+            joinRoom(room.id || room.roomId);
         }).catch(err => {
             console.error('Room creation failed', err);
             alert('Failed to create room');
@@ -229,7 +220,7 @@ function updateRoomList() {
         const joinBtn = document.createElement('button');
         joinBtn.className = 'join-btn';
         joinBtn.textContent = 'Join';
-        joinBtn.addEventListener('click', () => joinRoom(room.id));
+        joinBtn.addEventListener('click', () => joinRoom(room.id || room.roomId));
 
         card.appendChild(preview);
         card.appendChild(info);
@@ -241,7 +232,7 @@ function updateRoomList() {
 
 function joinRoom(roomId) {
     const previousRoomId = currentRoom ? currentRoom.id : null;
-    currentRoom = rooms.find(r => r.id === roomId) || null;
+    currentRoom = rooms.find(r => r.id === roomId || r.roomId === roomId) || null;
 
     if (previousRoomId && previousRoomId !== currentRoom.id) {
         cleanupRoomState(previousRoomId);
@@ -973,7 +964,7 @@ class SmoothedBrush extends fabric.PencilBrush {
                 strokeColor: this.color,
                 strokeWidth: this.width
             });
-            apiPersistStroke(roomId, {
+            persistStrokeFallback(roomId, {
                 path: pathData,
                 strokeColor: this.color,
                 strokeWidth: this.width,
@@ -1403,11 +1394,11 @@ function startRect(o) {
         canvas.renderAll();
     });
     
-    canvas.once('mouse:up', () => {
-        canvas.off('mouse:move');
-        canvas.off('mouse:down', startRect);
-        if (rect.path) {
-            const roomId = currentRoom ? currentRoom.id : null;
+        canvas.once('mouse:up', () => {
+            canvas.off('mouse:move');
+            canvas.off('mouse:down', startRect);
+            if (rect.path) {
+                const roomId = currentRoom ? currentRoom.id : null;
             const payload = {
                 path: rect.path,
                 action: 'add',
@@ -1418,7 +1409,7 @@ function startRect(o) {
             };
             sendWebSocketMessage('drawingUpdate', payload);
             if (roomId) {
-                apiPersistStroke(roomId, {
+                persistStrokeFallback(roomId, {
                     path: rect.path,
                     strokeColor: rect.stroke,
                     strokeWidth: rect.strokeWidth,
@@ -1462,11 +1453,11 @@ function startCircle(o) {
         canvas.renderAll();
     });
     
-    canvas.once('mouse:up', () => {
-        canvas.off('mouse:move');
-        canvas.off('mouse:down', startCircle);
-        if (circle.path) {
-            const roomId = currentRoom ? currentRoom.id : null;
+        canvas.once('mouse:up', () => {
+            canvas.off('mouse:move');
+            canvas.off('mouse:down', startCircle);
+            if (circle.path) {
+                const roomId = currentRoom ? currentRoom.id : null;
             const payload = {
                 path: circle.path,
                 action: 'add',
@@ -1477,7 +1468,7 @@ function startCircle(o) {
             };
             sendWebSocketMessage('drawingUpdate', payload);
             if (roomId) {
-                apiPersistStroke(roomId, {
+                persistStrokeFallback(roomId, {
                     path: circle.path,
                     strokeColor: circle.stroke,
                     strokeWidth: circle.strokeWidth,
@@ -2050,7 +2041,7 @@ class SimulatedUser {
             strokeWidth: user.brushSize
         };
         sendWebSocketMessage('drawingUpdate', payload);
-        apiPersistStroke(this.roomId, {
+        persistStrokeFallback(this.roomId, {
             path: pathData,
             strokeColor: user.color,
             strokeWidth: user.brushSize,
