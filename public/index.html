@@ -136,6 +136,71 @@
          SCRIPT INCLUDES
     ============================= -->
 
+    <!-- Load Amplify from CDN (UMD build exposes window.aws_amplify) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aws-amplify/3.3.27/aws-amplify.min.js"></script>
+
+    <script>
+      // aws-amplify UMD sets window.aws_amplify
+      const AmplifyLib = window.aws_amplify;
+      if (!AmplifyLib) {
+        console.error('Amplify failed to load');
+      }
+      const { Amplify, Auth } = AmplifyLib || {};
+
+      // Configure Amplify Auth with YOUR Cognito values
+      Amplify.configure({
+        Auth: {
+          region: 'us-east-1',
+          userPoolId: 'us-east-1_dzXKK1iCY',              // your pool ID
+          userPoolWebClientId: 'm2kghbo1i1ovjofmslsolp429', // your app client ID
+          oauth: {
+            // NOTE: domain is WITHOUT /login
+            domain: 'online-drawing-app-auth-cs218.auth.us-east-1.amazoncognito.com',
+            scope: ['openid', 'email', 'profile'],
+            redirectSignIn: 'https://d2s6tk6qg8cklz.cloudfront.net',
+            redirectSignOut: 'https://d2s6tk6qg8cklz.cloudfront.net',
+            responseType: 'code' // Authorization code grant
+          }
+        }
+      });
+
+      // Require login before showing the app
+      async function ensureLoggedIn() {
+        if (!Auth) {
+          console.error('Auth unavailable; Amplify not initialized');
+          return;
+        }
+        try {
+          // Check if we already have a session
+          const session = await Auth.currentSession();
+          const idToken = session.getIdToken();
+
+          // Expose ID token for your WebSocket backend (if needed later)
+          window.ID_TOKEN = idToken.getJwtToken();
+          window.COG_USER = idToken.payload; // contains email, sub, etc.
+
+          console.log('Logged in as:', window.COG_USER.email);
+          document.body.classList.add('authed'); // used by CSS to show the app
+          window.__authReady = true;
+
+          // Start the app (app.js exposes window.startDrawingApp)
+          if (typeof window.startDrawingApp === 'function') {
+            window.startDrawingApp();
+          }
+
+          // If you want to delay app startup until after login,
+          // you can call an init function from app.js here:
+          // initDrawingBoard();
+        } catch (e) {
+          // No session -> redirect to Cognito Hosted UI
+          console.log('No session, redirecting to Cognito login…', e);
+          await Auth.federatedSignIn(); // this will redirect out to the Hosted UI
+        }
+      }
+
+      // Kick off login check as soon as page loads
+      ensureLoggedIn();
+    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
     <script src="app.js"></script>
 

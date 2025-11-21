@@ -2089,7 +2089,16 @@ async function initApp() {
     await loadRooms();
 }
 
-initApp();
+// Expose a start hook so Cognito login can gate initialization
+window.startDrawingApp = async function () {
+    if (window.__drawingAppStarted) return;
+    window.__drawingAppStarted = true;
+    await initApp();
+};
+
+if (window.__authReady && typeof window.startDrawingApp === 'function') {
+    window.startDrawingApp();
+}
 
 // Fallback local user for single-player/offline scenarios
 function ensureLocalUser(roomId = getActiveRoomId()) {
