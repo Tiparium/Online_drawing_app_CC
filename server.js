@@ -3,46 +3,83 @@ const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, ScanCommand, PutCommand, QueryCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data', 'pseudo-s3.json');
+const ENVIRONMENT = process.env.ENVIRONMENT || 'dev';
+const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+const ROOMS_TABLE = process.env.ROOMS_TABLE || `Rooms-${ENVIRONMENT}`;
+const STROKES_TABLE = process.env.STROKES_TABLE || `CanvasObjects-${ENVIRONMENT}`;
+const DEPLOY_TABLE = process.env.DEPLOY_TABLE || `DeploymentStats-${ENVIRONMENT}`;
 
-// Ensure data directory exists
-if (!fs.existsSync(path.join(__dirname, 'data'))) {
-  fs.mkdirSync(path.join(__dirname, 'data'));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+
+async function listRooms() {
+   const data = await ddb.send(new ScanCommand({ TableName: ROOMS_TABLE }));
+   const rooms = data.Items || [];
+   rooms.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+   return rooms;
 }
 
-function loadStore() {
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch (err) {
-    return { rooms: [], strokesByRoom: {} };
-  }
+async function createRoom(name, privacy = 'public') {
+   const room = { roomId: uuidv4(), name, privacy, createdAt: Date.now() };
+   await ddb.send(new PutCommand({ TableName: ROOMS_TABLE, Item: room }));
+   return room;
 }
 
-function saveStore(store) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf8');
+async function listStrokes(roomId) {
+   const data = await ddb.send(new QueryCommand({
+      TableName: STROKES_TABLE,
+      KeyConditionExpression: 'roomId = :r',
+      ExpressionAttributeValues: { ':r': roomId },
+      ScanIndexForward: true
+   }));
+   return data.Items || [];
 }
 
-let store = loadStore();
-if (!store.strokesByRoom) store.strokesByRoom = {};
+async function persistStroke(roomId, stroke) {
+   if (!roomId || !stroke) return;
+   const item = {
+      roomId,
+      objectId: uuidv4(),
+      ...stroke,
+      timestamp: stroke.timestamp || Date.now()
+   };
+   await ddb.send(new PutCommand({ TableName: STROKES_TABLE, Item: item }));
+}
 
-function persistStroke(roomId, stroke) {
-  if (!roomId || !stroke) return;
-  if (!store.strokesByRoom[roomId]) store.strokesByRoom[roomId] = [];
-  store.strokesByRoom[roomId].push(stroke);
-  saveStore(store);
+async function getDeployCount() {
+   try {
+      const res = await ddb.send(new GetCommand({
+         TableName: DEPLOY_TABLE,
+         Key: { id: 'deploy' }
+      }));
+      const raw = res.Item && res.Item.deployCount;
+      const val = typeof raw === 'object' && raw !== null && 'N' in raw ? Number(raw.N) : Number(raw);
+      return Number.isFinite(val) ? val : 0;
+   } catch (err) {
+      console.error('Failed to fetch deploy count', err);
+      return 0;
+   }
 }
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
+app.use((req, res, next) => {
+   res.header('Access-Control-Allow-Origin', '*');
+   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+   if (req.method === 'OPTIONS') {
+      res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+      return res.sendStatus(200);
+   }
+   next();
+});
 
 // Health check endpoint (useful for AWS load balancers)
 app.get('/health', (req, res) => {
@@ -54,27 +91,41 @@ app.get('/', (req, res) => {
    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Pseudo S3 APIs
-app.get('/api/rooms', (req, res) => {
-   res.json({ rooms: store.rooms });
+// REST APIs backed by DynamoDB
+app.get('/api/rooms', async (req, res) => {
+   try {
+      const rooms = await listRooms();
+      res.json({ rooms });
+   } catch (err) {
+      console.error('Failed to list rooms', err);
+      res.status(500).json({ error: 'Failed to list rooms' });
+   }
 });
 
-app.post('/api/rooms', (req, res) => {
+app.post('/api/rooms', async (req, res) => {
    const { name, privacy } = req.body || {};
    if (!name) return res.status(400).json({ error: 'name required' });
-   const room = { id: uuidv4(), name, privacy: privacy || 'public', createdAt: Date.now() };
-   store.rooms.push(room);
-   saveStore(store);
-   res.json(room);
+   try {
+      const room = await createRoom(name, privacy || 'public');
+      res.json(room);
+   } catch (err) {
+      console.error('Failed to create room', err);
+      res.status(500).json({ error: 'Failed to create room' });
+   }
 });
 
-app.get('/api/rooms/:roomId/strokes', (req, res) => {
+app.get('/api/rooms/:roomId/strokes', async (req, res) => {
    const { roomId } = req.params;
-   const strokes = store.strokesByRoom[roomId] || [];
-   res.json({ strokes });
+   try {
+      const strokes = await listStrokes(roomId);
+      res.json({ strokes });
+   } catch (err) {
+      console.error('Failed to list strokes', err);
+      res.status(500).json({ error: 'Failed to list strokes' });
+   }
 });
 
-app.post('/api/rooms/:roomId/strokes', (req, res) => {
+app.post('/api/rooms/:roomId/strokes', async (req, res) => {
    const { roomId } = req.params;
    const { path: pathData, strokeColor, strokeWidth, smoothing, userId } = req.body || {};
    if (!pathData) return res.status(400).json({ error: 'path required' });
@@ -86,8 +137,18 @@ app.post('/api/rooms/:roomId/strokes', (req, res) => {
       userId: userId || 'unknown',
       timestamp: Date.now()
    };
-   persistStroke(roomId, stroke);
-   res.json({ ok: true });
+   try {
+      await persistStroke(roomId, stroke);
+      res.json({ ok: true });
+   } catch (err) {
+      console.error('Failed to persist stroke', err);
+      res.status(500).json({ error: 'Failed to persist stroke' });
+   }
+});
+
+app.get('/api/deploy-count', async (req, res) => {
+   const count = await getDeployCount();
+   res.json({ count });
 });
 
 // WebSocket connection management
@@ -166,9 +227,7 @@ ws.send(JSON.stringify({
                 break;
 
             case 'drawingUpdate':
-
                const roomId = data.roomId || users.get(userId)?.roomId || null;
-               // Store stroke in pseudo S3
                if (data.action === 'add' && roomId) {
                   persistStroke(roomId, {
                      path: data.path,
@@ -177,7 +236,7 @@ ws.send(JSON.stringify({
                      smoothing: data.smoothing,
                      userId,
                      timestamp: Date.now()
-                  });
+                  }).catch(err => console.error('Failed to persist stroke', err));
                }
 
                // Forward drawing updates to all other users in room
@@ -215,12 +274,13 @@ ws.send(JSON.stringify({
    });
 
    ws.on('close', () => {
+      const roomId = users.get(userId)?.roomId || null;
       users.delete(userId);
       broadcast({
          type: 'userLeft',
          userId,
-         roomId: users.get(userId)?.roomId || null
-      }, userId, users.get(userId)?.roomId || null);
+         roomId
+      }, userId, roomId);
    });
 });
 

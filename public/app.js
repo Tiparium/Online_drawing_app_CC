@@ -38,17 +38,39 @@ const backToMenuBtn     = document.getElementById('backToMenuBtn');
 let rooms = [];
 let nextRoomId = 1;
 let currentRoom = null;
-const API_BASE = '';
+// Allow overriding API/WS base via global for hosted frontends (e.g., S3 + separate backend)
+const BOOT_CONFIG = (typeof window !== 'undefined' && window.__CONFIG) ? window.__CONFIG : {};
+const API_BASE_RAW = (typeof window !== 'undefined' && (window.__API_BASE ?? BOOT_CONFIG.API_BASE)) ? (window.__API_BASE ?? BOOT_CONFIG.API_BASE) : '';
+const WS_BASE_RAW = (typeof window !== 'undefined' && (window.__WS_BASE ?? BOOT_CONFIG.WS_BASE)) ? (window.__WS_BASE ?? BOOT_CONFIG.WS_BASE) : null;
+const apiBaseNormalized = API_BASE_RAW.endsWith('/') ? API_BASE_RAW.slice(0, -1) : API_BASE_RAW;
+const wsBaseNormalized = WS_BASE_RAW && WS_BASE_RAW.endsWith('/') ? WS_BASE_RAW.slice(0, -1) : WS_BASE_RAW;
+
+const backendWarningEl = document.getElementById('backendWarning');
+function setBackendWarning(message) {
+    if (!backendWarningEl) return;
+    backendWarningEl.textContent = message;
+    backendWarningEl.classList.remove('hidden');
+}
+function clearBackendWarning() {
+    if (!backendWarningEl) return;
+    backendWarningEl.textContent = '';
+    backendWarningEl.classList.add('hidden');
+}
+
+function backendConfigState() {
+    const hasConfig = Boolean(apiBaseNormalized || wsBaseNormalized);
+    return { hasConfig, apiBaseNormalized, wsBaseNormalized };
+}
 
 async function apiGetRooms() {
-    const res = await fetch(`${API_BASE}/api/rooms`);
+    const res = await fetch(`${apiBaseNormalized}/api/rooms`);
     if (!res.ok) throw new Error(`rooms fetch failed: ${res.status}`);
     const data = await res.json();
     return data.rooms || [];
 }
 
 async function apiCreateRoom(payload) {
-    const res = await fetch(`${API_BASE}/api/rooms`, {
+    const res = await fetch(`${apiBaseNormalized}/api/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -58,7 +80,7 @@ async function apiCreateRoom(payload) {
 }
 
 async function apiGetRoomStrokes(roomId) {
-    const res = await fetch(`${API_BASE}/api/rooms/${roomId}/strokes`);
+    const res = await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/strokes`);
     if (!res.ok) throw new Error(`strokes fetch failed: ${res.status}`);
     const data = await res.json();
     return data.strokes || [];
@@ -66,13 +88,34 @@ async function apiGetRoomStrokes(roomId) {
 
 async function apiPersistStroke(roomId, stroke) {
     try {
-        await fetch(`${API_BASE}/api/rooms/${roomId}/strokes`, {
+        await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/strokes`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(stroke)
         });
     } catch (err) {
         console.error('Failed to persist stroke', err);
+    }
+}
+
+async function loadDeployCount() {
+    if (!deployCounterEl) return;
+    try {
+        const res = await fetch(`${apiBaseNormalized}/api/deploy-count`);
+        if (!res.ok) throw new Error('deploy count failed');
+        const data = await res.json();
+        const count = Number(data.count);
+        deployCounterEl.textContent = `Deploy #${Number.isFinite(count) ? count : 0}`;
+        clearBackendWarning();
+    } catch (err) {
+        console.error('Failed to load deploy count', err);
+        deployCounterEl.textContent = 'Deploy #?';
+        const { hasConfig } = backendConfigState();
+        if (!hasConfig) {
+            setBackendWarning('No backend configured. Set API_BASE/WS_BASE in public/config.js (or via deploy.sh) so deploy count and whiteboards can load.');
+        } else {
+            setBackendWarning('Could not reach the backend for deploy count. Verify API_BASE/WS_BASE and backend availability.');
+        }
     }
 }
 
@@ -99,9 +142,16 @@ async function loadRooms() {
     try {
         rooms = await apiGetRooms();
         updateRoomList();
+        clearBackendWarning();
     } catch (err) {
         console.error('Failed to load rooms', err);
-        alert('Failed to load rooms from pseudo-S3. Is the server running?');
+        const { hasConfig } = backendConfigState();
+        if (!hasConfig) {
+            setBackendWarning('No backend configured. Set API_BASE/WS_BASE in public/config.js (or via deploy.sh) so whiteboards can load.');
+        } else {
+            setBackendWarning('Could not reach the backend to load whiteboards. Check your API_BASE/WS_BASE or backend health.');
+        }
+        alert('Failed to load rooms from backend.');
     }
 }
 
@@ -1006,7 +1056,8 @@ let isConnected = false;
 
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
+    // Prefer configured WS base (can be wss://… or ws://…); otherwise same-origin
+    const wsUrl = wsBaseNormalized || `${protocol}//${window.location.host}`;
     
     ws = new WebSocket(wsUrl);
     
@@ -1206,6 +1257,7 @@ const smoothingValue = document.getElementById('smoothingValue');
 const saveBtn = document.getElementById('saveBtn');
 const loadBtn = document.getElementById('loadBtn');
 const fileInput = document.getElementById('fileInput');
+const deployCounterEl = document.getElementById('deployCounter');
 const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
 let defaultRoomSettings = null;
 
@@ -2086,7 +2138,7 @@ toggleUsersPane.addEventListener('click', () => {
 async function initApp() {
     setMode('draw');
     connectWebSocket();
-    await loadRooms();
+    await Promise.all([loadRooms(), loadDeployCount()]);
 }
 
 // Expose a start hook so Cognito login can gate initialization

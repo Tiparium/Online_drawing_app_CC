@@ -58,10 +58,27 @@ aws dynamodb create-table \
 echo "✓ Connections table created"
 echo ""
 
+# Table 4: DeploymentStats
+echo "Creating DeploymentStats table..."
+aws dynamodb create-table \
+    --table-name "DeploymentStats-${ENVIRONMENT}" \
+    --attribute-definitions \
+        AttributeName=id,AttributeType=S \
+    --key-schema \
+        AttributeName=id,KeyType=HASH \
+    --billing-mode PAY_PER_REQUEST \
+    --region "$REGION" \
+    --tags Key=Environment,Value="$ENVIRONMENT" Key=Project,Value=DrawingApp \
+    2>/dev/null || echo "Table already exists"
+
+echo "✓ DeploymentStats table created"
+echo ""
+
 echo "Waiting for tables to be active..."
 aws dynamodb wait table-exists --table-name "Rooms-${ENVIRONMENT}" --region "$REGION"
 aws dynamodb wait table-exists --table-name "CanvasObjects-${ENVIRONMENT}" --region "$REGION"
 aws dynamodb wait table-exists --table-name "Connections-${ENVIRONMENT}" --region "$REGION"
+aws dynamodb wait table-exists --table-name "DeploymentStats-${ENVIRONMENT}" --region "$REGION"
 
 echo ""
 echo "✓ All DynamoDB tables created and active!"
@@ -70,5 +87,5 @@ echo "Tables:"
 echo "  - Rooms-${ENVIRONMENT}"
 echo "  - CanvasObjects-${ENVIRONMENT}"
 echo "  - Connections-${ENVIRONMENT}"
+echo "  - DeploymentStats-${ENVIRONMENT}"
 echo ""
-

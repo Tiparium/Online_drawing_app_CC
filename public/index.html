@@ -8,11 +8,13 @@
 </head>
 
 <body>
+    <div id="backendWarning" class="backend-warning hidden"></div>
 
     <!-- ============================
          MAIN MENU SCREEN
     ============================= -->
     <div id="mainMenu" class="screen active">
+        <div id="deployCounter" class="deploy-counter">Deploy #0</div>
         <div class="menu-container">
 
             <header class="menu-header">
@@ -138,6 +140,8 @@
 
     <!-- Load Amplify from CDN (UMD build exposes window.aws_amplify) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/aws-amplify/3.3.27/aws-amplify.min.js"></script>
+    <!-- Optional runtime configuration for API base URL (generated during deploy) -->
+    <script src="config.js"></script>
 
     <script>
       // aws-amplify UMD sets window.aws_amplify

@@ -44,6 +44,12 @@ npm run dev
 http://localhost:3000
 ```
 
+### Pointing the frontend at your backend
+
+The static site expects a runtime config file at `public/config.js` that sets `window.__API_BASE` (the base URL of your API/server). When you run `./deploy.sh`, set `API_BASE=https://your-backend.example.com` and the script will generate `public/config.js` before uploading to S3/CloudFront. For local testing, you can copy `public/config.example.js` to `public/config.js` and update it to point at your running backend.
+
+- If your WebSocket endpoint differs from the API host, set `WS_BASE=wss://your-backend.example.com` when running `./deploy.sh` (or in `public/config.js`). Leaving it blank falls back to the same origin as the site.
+
 ## AWS Deployment
 
 This application is designed for easy deployment to AWS. Here are several deployment options:
@@ -153,4 +159,3 @@ The application includes a health check endpoint at `/health` that returns a 200
 ## License
 
 MIT
-
