@@ -1,0 +1,16 @@
+{
+  "name": "drawing-app-lambda",
+  "version": "1.0.0",
+  "description": "Lambda functions for drawing app",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.632.0",
+    "@aws-sdk/lib-dynamodb": "^3.632.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.632.0",
+    "uuid": "^9.0.1"
+  }
+}
+

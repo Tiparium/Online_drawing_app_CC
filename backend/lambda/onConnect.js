@@ -1,11 +1,15 @@
 // WebSocket onConnect Handler
-// Triggered when user connects to WebSocket
+// Triggered when user connects to WebSocket API
 
-const AWS = require('aws-sdk');
-const dynamodb = new AWS.DynamoDB.DocumentClient();
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'Connections-dev';
-const CANVAS_OBJECTS_TABLE = process.env.CANVAS_OBJECTS_TABLE || 'CanvasObjects-dev';
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+
+const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'Connections-production';
+const CANVAS_OBJECTS_TABLE = process.env.CANVAS_OBJECTS_TABLE || 'CanvasObjects-production';
 
 exports.handler = async (event) => {
     const connectionId = event.requestContext.connectionId;
@@ -15,7 +19,7 @@ exports.handler = async (event) => {
     
     try {
         // Store connection info
-        await dynamodb.put({
+        await ddb.send(new PutCommand({
             TableName: CONNECTIONS_TABLE,
             Item: {
                 connectionId: connectionId,
@@ -23,41 +27,32 @@ exports.handler = async (event) => {
                 connectedAt: Date.now(),
                 ttl: Math.floor(Date.now() / 1000) + 7200  // 2 hour TTL
             }
-        }).promise();
+        }));
+        
+        console.log('Connection stored:', connectionId);
         
         // Load existing canvas objects for this room
-        const canvasData = await dynamodb.query({
+        const canvasData = await ddb.send(new QueryCommand({
             TableName: CANVAS_OBJECTS_TABLE,
             KeyConditionExpression: 'roomId = :roomId',
             ExpressionAttributeValues: {
                 ':roomId': roomId
-            }
-        }).promise();
+            },
+            Limit: 1000  // Load up to 1000 strokes
+        }));
         
-        // Send canvas state to newly connected user
-        const apiGateway = new AWS.ApiGatewayManagementApi({
-            endpoint: event.requestContext.domainName + '/' + event.requestContext.stage
-        });
-        
-        await apiGateway.postToConnection({
-            ConnectionId: connectionId,
-            Data: JSON.stringify({
-                type: 'canvasState',
-                roomId: roomId,
-                objects: canvasData.Items.map(item => item.objectData)
-            })
-        }).promise();
+        console.log(`Loaded ${canvasData.Items?.length || 0} objects for room ${roomId}`);
+        console.log('Connection accepted. Client will request initial state via message.');
         
         return {
             statusCode: 200,
             body: 'Connected'
         };
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in onConnect:', error);
         return {
             statusCode: 500,
-            body: 'Failed to connect'
+            body: JSON.stringify({ message: 'Failed to connect', error: error.message })
         };
     }
 };
-

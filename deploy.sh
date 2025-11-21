@@ -12,9 +12,12 @@ API_BASE="${API_BASE:-${BACKEND_URL:-}}"
 WS_BASE="${WS_BASE:-${API_BASE:-${BACKEND_WS_URL:-}}}"
 CONFIG_PATH="public/config.js"
 
-echo "Deploying to S3..."
+echo "=========================================="
+echo "Deploying Frontend to S3"
+echo "=========================================="
 echo "Bucket: $BUCKET_NAME"
 echo "Region: $REGION"
+echo "Environment: $ENVIRONMENT"
 echo "API base: ${API_BASE:-<same-origin>}"
 echo "WS base: ${WS_BASE:-<same-origin>}"
 echo ""
@@ -74,8 +77,10 @@ rm /tmp/policy.json
 aws s3 sync public/ "s3://$BUCKET_NAME/" --delete
 
 echo ""
-echo "✓ Deployed successfully!"
-echo "URL: http://$BUCKET_NAME.s3-website-$REGION.amazonaws.com"
+echo "=========================================="
+echo "✓ Frontend deployed successfully!"
+echo "=========================================="
+echo "Frontend URL: http://$BUCKET_NAME.s3-website-$REGION.amazonaws.com"
 
 # Increment deploy counter in DynamoDB
 echo "Updating deploy counter in DynamoDB table ${DEPLOY_TABLE}..."

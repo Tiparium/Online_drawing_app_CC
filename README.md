@@ -50,9 +50,31 @@ The static site expects a runtime config file at `public/config.js` that sets `w
 
 - If your WebSocket endpoint differs from the API host, set `WS_BASE=wss://your-backend.example.com` when running `./deploy.sh` (or in `public/config.js`). Leaving it blank falls back to the same origin as the site.
 
-## AWS Deployment
+## AWS Serverless Deployment
 
-This application is designed for easy deployment to AWS. Here are several deployment options:
+**⚡ NEW: Full Serverless Deployment with Lambda + API Gateway!**
+
+Deploy in 3 commands (~5 minutes):
+```bash
+# 1. Create database
+cd backend/infrastructure && ENVIRONMENT=production ./setup-dynamodb.sh && cd ../..
+
+# 2. Deploy backend (Lambda + API Gateway)
+ENVIRONMENT=production ./deploy-lambda.sh
+
+# 3. Deploy frontend (S3 + CloudFront)
+export API_BASE="<URL-FROM-STEP-2>"
+export WS_BASE="<URL-FROM-STEP-2>"
+./deploy.sh
+```
+
+See [QUICK_START.md](QUICK_START.md) or [SERVERLESS_DEPLOYMENT.md](SERVERLESS_DEPLOYMENT.md) for complete guide.
+
+---
+
+## Alternative AWS Deployment Options
+
+This application was designed for serverless but can also deploy to:
 
 ### Option 1: AWS Elastic Beanstalk (Easiest)
 

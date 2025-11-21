@@ -6,3 +6,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+
+# AWS SAM build artifacts
+backend/lambda/.aws-sam/
+backend/lambda/node_modules/
+public/config.js

@@ -1,0 +1,324 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Drawing App - Serverless Backend with WebSocket and REST APIs
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - dev
+      - staging
+      - production
+    Description: Deployment environment
+
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        ROOMS_TABLE: !Sub 'Rooms-${Environment}'
+        STROKES_TABLE: !Sub 'CanvasObjects-${Environment}'
+        CONNECTIONS_TABLE: !Sub 'Connections-${Environment}'
+        CANVAS_OBJECTS_TABLE: !Sub 'CanvasObjects-${Environment}'
+        DEPLOY_TABLE: !Sub 'DeploymentStats-${Environment}'
+
+Resources:
+  # ============================================
+  # WebSocket API for Real-time Drawing
+  # ============================================
+  
+  DrawingWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub 'drawing-app-websocket-${Environment}'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.type'
+      Description: WebSocket API for real-time drawing collaboration
+
+  # WebSocket: Connect Route
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      RouteKey: '$connect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${ConnectIntegration}'
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OnConnectFunction.Arn}/invocations'
+
+  # WebSocket: Default Route (handles all messages)
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      RouteKey: '$default'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DefaultIntegration}'
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OnMessageFunction.Arn}/invocations'
+
+  # WebSocket: Disconnect Route
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      RouteKey: '$disconnect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DisconnectIntegration}'
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OnDisconnectFunction.Arn}/invocations'
+
+  # WebSocket: Deployment
+  WebSocketDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DefaultRoute
+      - DisconnectRoute
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+
+  # WebSocket: Stage
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref DrawingWebSocketApi
+      DeploymentId: !Ref WebSocketDeployment
+      StageName: !Ref Environment
+      Description: !Sub '${Environment} stage'
+
+  # ============================================
+  # REST API for Rooms and Strokes
+  # ============================================
+  
+  DrawingRestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'drawing-app-rest-${Environment}'
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+  # ============================================
+  # Lambda Functions
+  # ============================================
+
+  # WebSocket: OnConnect
+  OnConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-onConnect-${Environment}'
+      CodeUri: .
+      Handler: onConnect.handler
+      Description: Handles WebSocket connections
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'Connections-${Environment}'
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'CanvasObjects-${Environment}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'execute-api:ManageConnections'
+              Resource:
+                - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  OnConnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnConnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  # WebSocket: OnMessage
+  OnMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-onMessage-${Environment}'
+      CodeUri: .
+      Handler: onMessage.handler
+      Description: Handles WebSocket messages and broadcasts
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'Connections-${Environment}'
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'CanvasObjects-${Environment}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'execute-api:ManageConnections'
+              Resource:
+                - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  OnMessagePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnMessageFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  # WebSocket: OnDisconnect
+  OnDisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-onDisconnect-${Environment}'
+      CodeUri: .
+      Handler: onDisconnect.handler
+      Description: Handles WebSocket disconnections
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'Connections-${Environment}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'execute-api:ManageConnections'
+              Resource:
+                - !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  OnDisconnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnDisconnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DrawingWebSocketApi}/*'
+
+  # REST API: Rooms
+  ApiRoomsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-api-rooms-${Environment}'
+      CodeUri: .
+      Handler: api-rooms.handler
+      Description: REST API for room management
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'Rooms-${Environment}'
+      Events:
+        GetRooms:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms
+            Method: GET
+        CreateRoom:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms
+            Method: POST
+        OptionsRooms:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms
+            Method: OPTIONS
+
+  # REST API: Strokes
+  ApiStrokesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-api-strokes-${Environment}'
+      CodeUri: .
+      Handler: api-strokes.handler
+      Description: REST API for stroke management
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'CanvasObjects-${Environment}'
+      Events:
+        GetStrokes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/strokes
+            Method: GET
+        CreateStroke:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/strokes
+            Method: POST
+        OptionsStrokes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/strokes
+            Method: OPTIONS
+
+  # REST API: Deploy Count
+  ApiDeployCountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'drawing-app-api-deploy-count-${Environment}'
+      CodeUri: .
+      Handler: api-deploy-count.handler
+      Description: REST API for deployment count
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Sub 'DeploymentStats-${Environment}'
+      Events:
+        GetDeployCount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/deploy-count
+            Method: GET
+        OptionsDeployCount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/deploy-count
+            Method: OPTIONS
+
+# ============================================
+# Outputs
+# ============================================
+
+Outputs:
+  WebSocketApiUrl:
+    Description: WebSocket API endpoint URL
+    Value: !Sub 'wss://${DrawingWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSocketApiUrl'
+
+  RestApiUrl:
+    Description: REST API endpoint URL
+    Value: !Sub 'https://${DrawingRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-RestApiUrl'
+
+  WebSocketApiId:
+    Description: WebSocket API ID
+    Value: !Ref DrawingWebSocketApi
+
+  RestApiId:
+    Description: REST API ID
+    Value: !Ref DrawingRestApi
+
+  StackName:
+    Description: CloudFormation Stack Name
+    Value: !Ref AWS::StackName
+
