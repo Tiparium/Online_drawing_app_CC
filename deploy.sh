@@ -11,6 +11,29 @@ DEPLOY_TABLE="DeploymentStats-${ENVIRONMENT}"
 API_BASE="${API_BASE:-${BACKEND_URL:-}}"
 WS_BASE="${WS_BASE:-${API_BASE:-${BACKEND_WS_URL:-}}}"
 CONFIG_PATH="public/config.js"
+RUN_ALL=false
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+for arg in "$@"; do
+  case "$arg" in
+    -all|--all) RUN_ALL=true ;;
+    -h|--help)
+      echo "Usage: $0 [-all]"
+      echo "  -all   Deploy backend (deploy-lambda.sh) then frontend (this script)"
+      exit 0
+      ;;
+  esac
+done
+
+if $RUN_ALL; then
+  echo "=========================================="
+  echo "Running backend deploy (deploy-lambda.sh)"
+  echo "=========================================="
+  "${SCRIPT_DIR}/deploy-lambda.sh"
+  echo ""
+  echo "Backend deploy finished. Continuing with frontend deploy..."
+  echo ""
+fi
 
 echo "=========================================="
 echo "Deploying Frontend to S3"

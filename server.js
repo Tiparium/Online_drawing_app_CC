@@ -4,7 +4,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, ScanCommand, PutCommand, QueryCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, ScanCommand, PutCommand, QueryCommand, GetCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
 
 const app = express();
 const server = http.createServer(app);
@@ -51,6 +51,34 @@ async function persistStroke(roomId, stroke) {
       timestamp: stroke.timestamp || Date.now()
    };
    await ddb.send(new PutCommand({ TableName: STROKES_TABLE, Item: item }));
+}
+
+async function clearRoomStrokes(roomId) {
+   if (!roomId) return;
+   let lastEvaluatedKey;
+   do {
+      const data = await ddb.send(new QueryCommand({
+         TableName: STROKES_TABLE,
+         KeyConditionExpression: 'roomId = :r',
+         ExpressionAttributeValues: { ':r': roomId },
+         ExclusiveStartKey: lastEvaluatedKey
+      }));
+      const items = data.Items || [];
+      lastEvaluatedKey = data.LastEvaluatedKey;
+      if (items.length === 0) continue;
+
+      // DynamoDB batch writes allow up to 25 items at a time
+      for (let i = 0; i < items.length; i += 25) {
+         const batch = items.slice(i, i + 25).filter(item => item.objectId);
+         if (batch.length === 0) continue;
+         const deleteRequests = batch.map(item => ({
+            DeleteRequest: { Key: { roomId, objectId: item.objectId } }
+         }));
+         await ddb.send(new BatchWriteCommand({
+            RequestItems: { [STROKES_TABLE]: deleteRequests }
+         }));
+      }
+   } while (lastEvaluatedKey);
 }
 
 async function getDeployCount() {
@@ -143,6 +171,17 @@ app.post('/api/rooms/:roomId/strokes', async (req, res) => {
    } catch (err) {
       console.error('Failed to persist stroke', err);
       res.status(500).json({ error: 'Failed to persist stroke' });
+   }
+});
+
+app.delete('/api/rooms/:roomId/strokes', async (req, res) => {
+   const { roomId } = req.params;
+   try {
+      await clearRoomStrokes(roomId);
+      res.json({ ok: true });
+   } catch (err) {
+      console.error('Failed to clear strokes', err);
+      res.status(500).json({ error: 'Failed to clear strokes' });
    }
 });
 
@@ -267,6 +306,18 @@ ws.send(JSON.stringify({
                   }, userId, roomId);
                }
                break;
+
+            case 'clearCanvas': {
+               const roomId = data.roomId || users.get(userId)?.roomId || null;
+               if (!roomId) break;
+               clearRoomStrokes(roomId).catch(err => console.error('Failed to clear strokes', err));
+               broadcast({
+                  type: 'canvasCleared',
+                  roomId,
+                  triggeredBy: userId
+               }, userId, roomId);
+               break;
+            }
         }
      } catch (error) {
          console.error('Error processing message:', error);

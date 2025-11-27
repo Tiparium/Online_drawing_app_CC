@@ -252,15 +252,13 @@ function joinRoom(roomId) {
 
 async function loadRoomStrokes(roomId) {
     try {
-        const strokes = await apiGetRoomStrokes(roomId);
-        canvas.clear();
-        canvas.backgroundColor = '#ffffff';
-        canvas.renderAll();
-        strokes.forEach(stroke => {
-            if (!stroke.path) return;
-            const path = new fabric.Path(stroke.path, {
-                fill: '',
-                stroke: stroke.strokeColor || '#000000',
+    const strokes = await apiGetRoomStrokes(roomId);
+    resetCanvasState(roomId);
+    strokes.forEach(stroke => {
+        if (!stroke.path) return;
+        const path = new fabric.Path(stroke.path, {
+            fill: '',
+            stroke: stroke.strokeColor || '#000000',
                 strokeWidth: stroke.strokeWidth || 5,
                 strokeLineCap: 'round',
                 strokeLineJoin: 'round',
@@ -1081,7 +1079,7 @@ function connectWebSocket() {
 function handleWebSocketMessage(data) {
     const targetRoomId = data.roomId || getActiveRoomId();
     const activeRoomId = getActiveRoomId();
-    const isRoomScoped = ['existingUsers', 'existingUsersInRoom', 'userJoined', 'userLeft', 'cursorMove', 'drawingUpdate', 'userSettings'].includes(data.type);
+    const isRoomScoped = ['existingUsers', 'existingUsersInRoom', 'userJoined', 'userLeft', 'cursorMove', 'drawingUpdate', 'userSettings', 'canvasCleared'].includes(data.type);
     if (isRoomScoped && data.roomId && data.roomId !== activeRoomId) {
         return;
     }
@@ -1159,6 +1157,10 @@ function handleWebSocketMessage(data) {
             
         case 'drawingUpdate':
             handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing);
+            break;
+
+        case 'canvasCleared':
+            applyRemoteCanvasRedraw(targetRoomId);
             break;
     }
 }
@@ -1362,6 +1364,37 @@ canvas.on('mouse:move', (e) => {
     }
 });
 
+function resetCanvasState(roomId = getActiveRoomId()) {
+    canvas.clear();
+    canvas.backgroundColor = '#ffffff';
+    canvas.renderAll();
+    const cache = getStrokeCache(roomId);
+    if (cache) {
+        cache.pending = [];
+    }
+}
+
+async function persistCanvasClear(roomId = getActiveRoomId()) {
+    if (!roomId) return;
+    try {
+        await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/strokes`, { method: 'DELETE' });
+    } catch (err) {
+        console.error('Failed to persist canvas clear', err);
+    }
+}
+
+async function pushCanvasRedrawToRoom(roomId = getActiveRoomId()) {
+    if (!roomId) return;
+    await persistCanvasClear(roomId);
+    // Notify peers via WebSocket; if disconnected, local clear still persisted
+    sendWebSocketMessage('clearCanvas', { roomId });
+}
+
+function applyRemoteCanvasRedraw(roomId = getActiveRoomId()) {
+    if (roomId !== getActiveRoomId()) return;
+    resetCanvasState(roomId);
+}
+
 // Rectangle tool
 rectBtn.addEventListener('click', () => {
     setMode('rect');
@@ -1497,11 +1530,12 @@ textBtn.addEventListener('click', () => {
 
 // Clear canvas
 clearBtn.addEventListener('click', () => {
-    if (confirm('Are you sure you want to clear the canvas?')) {
-        canvas.clear();
-        canvas.backgroundColor = '#ffffff';
-        canvas.renderAll();
-    }
+    const roomId = getActiveRoomId();
+    const confirmed = confirm('Are you sure you want to clear the canvas for everyone in this whiteboard?');
+    if (!confirmed) return;
+
+    resetCanvasState(roomId);
+    pushCanvasRedrawToRoom(roomId);
 });
 
 // Save canvas
