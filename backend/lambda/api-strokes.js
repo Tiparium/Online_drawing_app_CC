@@ -2,7 +2,7 @@
 // Handles: GET /api/rooms/{roomId}/strokes, POST /api/rooms/{roomId}/strokes
 
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, QueryCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, QueryCommand, PutCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const { v4: uuidv4 } = require('uuid');
 
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -18,7 +18,7 @@ function response(statusCode, body) {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-            'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+            'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS'
         },
         body: JSON.stringify(body)
     };
@@ -95,6 +95,49 @@ exports.handler = async (event) => {
             
             return response(200, { ok: true });
         }
+
+        // DELETE /api/rooms/{roomId}/strokes - Clear all strokes for room
+        if (method === 'DELETE') {
+            let lastEvaluatedKey;
+            let deleted = 0;
+
+            do {
+                const query = await ddb.send(new QueryCommand({
+                    TableName: STROKES_TABLE,
+                    KeyConditionExpression: 'roomId = :roomId',
+                    ExpressionAttributeValues: {
+                        ':roomId': roomId
+                    },
+                    ExclusiveStartKey: lastEvaluatedKey
+                }));
+
+                const items = query.Items || [];
+                lastEvaluatedKey = query.LastEvaluatedKey;
+
+                for (let i = 0; i < items.length; i += 25) {
+                    const batch = items.slice(i, i + 25);
+                    const requests = batch.map(item => ({
+                        DeleteRequest: {
+                            Key: {
+                                roomId,
+                                objectId: item.objectId
+                            }
+                        }
+                    }));
+                    if (requests.length > 0) {
+                        await ddb.send(new BatchWriteCommand({
+                            RequestItems: {
+                                [STROKES_TABLE]: requests
+                            }
+                        }));
+                        deleted += requests.length;
+                    }
+                }
+            } while (lastEvaluatedKey);
+
+            console.log(`Deleted ${deleted} strokes for room ${roomId}`);
+            return response(200, { ok: true, deleted });
+        }
         
         return response(405, { error: 'Method not allowed' });
         
@@ -106,4 +149,3 @@ exports.handler = async (event) => {
         });
     }
 };
-

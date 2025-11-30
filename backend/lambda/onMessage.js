@@ -2,7 +2,7 @@
 // Handles all incoming WebSocket messages and broadcasts to room
 
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, DeleteCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, DeleteCommand, UpdateCommand, QueryCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -10,6 +10,7 @@ const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'Connections-production';
 const CANVAS_OBJECTS_TABLE = process.env.CANVAS_OBJECTS_TABLE || 'CanvasObjects-production';
+const MAX_BATCH = 25;
 
 // Broadcast message to all connections in a room except sender
 async function broadcastToRoom(roomId, message, excludeConnectionId, apiGateway) {
@@ -47,6 +48,48 @@ async function broadcastToRoom(roomId, message, excludeConnectionId, apiGateway)
     });
     
     await Promise.all(postCalls);
+}
+
+async function clearRoomStrokes(roomId) {
+    let lastEvaluatedKey;
+    let deleted = 0;
+
+    do {
+        const query = await ddb.send(new QueryCommand({
+            TableName: CANVAS_OBJECTS_TABLE,
+            KeyConditionExpression: 'roomId = :roomId',
+            ExpressionAttributeValues: {
+                ':roomId': roomId
+            },
+            ExclusiveStartKey: lastEvaluatedKey
+        }));
+
+        const items = query.Items || [];
+        lastEvaluatedKey = query.LastEvaluatedKey;
+
+        for (let i = 0; i < items.length; i += MAX_BATCH) {
+            const batch = items.slice(i, i + MAX_BATCH);
+            const requests = batch.map(item => ({
+                DeleteRequest: {
+                    Key: {
+                        roomId,
+                        objectId: item.objectId
+                    }
+                }
+            }));
+            if (requests.length > 0) {
+                await ddb.send(new BatchWriteCommand({
+                    RequestItems: {
+                        [CANVAS_OBJECTS_TABLE]: requests
+                    }
+                }));
+                deleted += requests.length;
+            }
+        }
+    } while (lastEvaluatedKey);
+
+    console.log(`Cleared ${deleted} strokes for room ${roomId}`);
+    return deleted;
 }
 
 exports.handler = async (event) => {
@@ -250,6 +293,16 @@ exports.handler = async (event) => {
                         mode: body.mode
                     },
                     roomId: roomId
+                }, connectionId, apiGateway);
+                break;
+            }
+
+            case 'clearCanvas': {
+                await clearRoomStrokes(roomId);
+                await broadcastToRoom(roomId, {
+                    type: 'canvasCleared',
+                    roomId: roomId,
+                    triggeredBy: connectionId
                 }, connectionId, apiGateway);
                 break;
             }
