@@ -297,6 +297,12 @@ async function loadRoomStrokes(roomId) {
 }
 
 function cleanupRoomState(roomId) {
+    // Clear per-user seq tracking for this room
+    getRemoteUsers(roomId).forEach(user => userSeqById.delete(user.userId));
+    if (localUser) {
+        userSeqById.delete(localUser.userId);
+    }
+
     const cursors = getUserCursors(roomId);
     cursors.forEach(wrapper => wrapper.remove());
     cursors.clear();
@@ -1133,6 +1139,7 @@ function handleWebSocketMessage(data) {
         
         case 'existingUsersInRoom':
             if (data.roomId !== activeRoomId) break;
+            const activeUsers = new Set();
             data.users.forEach(user => {
                 if (user.userId !== currentUserId) {
                     if (getRemoteUsers(data.roomId).has(user.userId)) return;
@@ -1142,6 +1149,13 @@ function handleWebSocketMessage(data) {
                     };
                     const remoteUser = new User(user.userId, remoteUserData, false, data.roomId);
                     getRemoteUsers(data.roomId).set(user.userId, remoteUser);
+                }
+                activeUsers.add(user.userId);
+            });
+            // Prune seq tracking for users not present
+            Array.from(userSeqById.keys()).forEach(uid => {
+                if (uid !== currentUserId && !activeUsers.has(uid)) {
+                    userSeqById.delete(uid);
                 }
             });
             renderUsersForActiveRoom();
@@ -1166,6 +1180,7 @@ function handleWebSocketMessage(data) {
             if (user) {
                 user.remove();
                 getRemoteUsers(targetRoomId).delete(data.userId);
+                userSeqById.delete(data.userId);
                 renderUsersForActiveRoom();
             }
             break;
@@ -1212,7 +1227,10 @@ function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(
         const status = noteSeqForUser(userId, seq);
         if (status === 'stale') return;
         if (status === 'gap') {
+            // Fetch missing ops and also reconcile active users list on gaps
             fetchUserDeltas(roomId, userId, (userSeqById.get(userId) || 0) - 1);
+            // Ask server for current users in room to prune stale entries
+            sendWebSocketMessage('existingUsersInRoom', { roomId });
             return;
         }
     }
