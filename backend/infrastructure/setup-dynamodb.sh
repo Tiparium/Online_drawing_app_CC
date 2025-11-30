@@ -10,6 +10,13 @@ echo "Environment: $ENVIRONMENT"
 echo "Region: $REGION"
 echo ""
 
+VERBOSE="${VERBOSE:-0}"
+if [ "$VERBOSE" -eq 0 ]; then
+  OUT="/dev/null"
+else
+  OUT="/dev/stdout"
+fi
+
 # Table 1: Rooms
 echo "Creating Rooms table..."
 aws dynamodb create-table \
@@ -21,7 +28,7 @@ aws dynamodb create-table \
     --billing-mode PAY_PER_REQUEST \
     --region "$REGION" \
     --tags Key=Environment,Value="$ENVIRONMENT" Key=Project,Value=DrawingApp \
-    2>/dev/null || echo "Table already exists"
+    >"$OUT" 2>/dev/null || echo "Table already exists"
 
 echo "✓ Rooms table created"
 
@@ -31,14 +38,26 @@ aws dynamodb create-table \
     --table-name "CanvasObjects-${ENVIRONMENT}" \
     --attribute-definitions \
         AttributeName=roomId,AttributeType=S \
-        AttributeName=objectId,AttributeType=S \
+        AttributeName=timestamp,AttributeType=N \
+        AttributeName=userSeqKey,AttributeType=S \
     --key-schema \
         AttributeName=roomId,KeyType=HASH \
-        AttributeName=objectId,KeyType=RANGE \
+        AttributeName=timestamp,KeyType=RANGE \
+    --global-secondary-indexes \
+        "[
+          {
+            \"IndexName\": \"StrokesByUserSeq\",
+            \"KeySchema\": [
+              {\"AttributeName\": \"roomId\", \"KeyType\": \"HASH\"},
+              {\"AttributeName\": \"userSeqKey\", \"KeyType\": \"RANGE\"}
+            ],
+            \"Projection\": {\"ProjectionType\": \"ALL\"}
+          }
+        ]" \
     --billing-mode PAY_PER_REQUEST \
     --region "$REGION" \
     --tags Key=Environment,Value="$ENVIRONMENT" Key=Project,Value=DrawingApp \
-    2>/dev/null || echo "Table already exists"
+    >"$OUT" 2>/dev/null || echo "Table already exists"
 
 echo "✓ CanvasObjects table created"
 
@@ -53,7 +72,7 @@ aws dynamodb create-table \
     --billing-mode PAY_PER_REQUEST \
     --region "$REGION" \
     --tags Key=Environment,Value="$ENVIRONMENT" Key=Project,Value=DrawingApp \
-    2>/dev/null || echo "Table already exists"
+    >"$OUT" 2>/dev/null || echo "Table already exists"
 
 echo "✓ Connections table created"
 echo ""
@@ -69,7 +88,7 @@ aws dynamodb create-table \
     --billing-mode PAY_PER_REQUEST \
     --region "$REGION" \
     --tags Key=Environment,Value="$ENVIRONMENT" Key=Project,Value=DrawingApp \
-    2>/dev/null || echo "Table already exists"
+    >"$OUT" 2>/dev/null || echo "Table already exists"
 
 echo "✓ DeploymentStats table created"
 echo ""

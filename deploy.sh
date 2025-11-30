@@ -12,24 +12,59 @@ API_BASE="${API_BASE:-${BACKEND_URL:-}}"
 WS_BASE="${WS_BASE:-${API_BASE:-${BACKEND_WS_URL:-}}}"
 CONFIG_PATH="public/config.js"
 RUN_ALL=false
+RUN_HARD=false
+VERBOSE=false
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 for arg in "$@"; do
   case "$arg" in
     -all|--all) RUN_ALL=true ;;
+    -hard|--hard) RUN_HARD=true ;;
+    -v|--verbose) VERBOSE=true ;;
     -h|--help)
-      echo "Usage: $0 [-all]"
-      echo "  -all   Deploy backend (deploy-lambda.sh) then frontend (this script)"
+      echo "Usage: $0 [-all] [-hard] [-v]"
+      echo "  -all    Deploy backend (deploy-lambda.sh) then frontend (this script)"
+      echo "  -hard   When combined with -all, recreate prereqs (DynamoDB tables) before backend deploy"
+      echo "  -v      Verbose output (table checks, setup logs)"
       exit 0
       ;;
   esac
 done
 
+ensure_tables() {
+  local env="$1"
+  local region="${AWS_REGION:-us-east-1}"
+  local missing=()
+  local tables=("Rooms-${env}" "CanvasObjects-${env}" "Connections-${env}" "DeploymentStats-${env}")
+
+  for t in "${tables[@]}"; do
+    if ! aws dynamodb describe-table --table-name "$t" --region "$region" >/dev/null 2>&1; then
+      missing+=("$t")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ] || [ "$RUN_HARD" = true ]; then
+    echo "Preparing DynamoDB tables (${env})..."
+    if [ "$VERBOSE" = true ]; then
+      (cd "${SCRIPT_DIR}/backend/infrastructure" && ENVIRONMENT="$env" VERBOSE=1 ./setup-dynamodb.sh)
+    else
+      (cd "${SCRIPT_DIR}/backend/infrastructure" && ENVIRONMENT="$env" VERBOSE=0 ./setup-dynamodb.sh)
+    fi
+  else
+    echo "DynamoDB tables present for ${env}; skipping setup."
+  fi
+}
+
 if $RUN_ALL; then
   echo "=========================================="
   echo "Running backend deploy (deploy-lambda.sh)"
   echo "=========================================="
-  "${SCRIPT_DIR}/deploy-lambda.sh"
+  ensure_tables "${ENVIRONMENT}"
+  LAMBDA_ARGS=()
+  if [ "$VERBOSE" = true ]; then
+    LAMBDA_ARGS+=("-v")
+  fi
+  "${SCRIPT_DIR}/deploy-lambda.sh" "${LAMBDA_ARGS[@]}"
   echo ""
   echo "Backend deploy finished. Continuing with frontend deploy..."
   echo ""

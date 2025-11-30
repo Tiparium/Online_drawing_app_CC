@@ -5,6 +5,19 @@
 set -e
 
 ENVIRONMENT="${ENVIRONMENT:-production}"
+VERBOSE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        -v|--verbose) VERBOSE=true ;;
+        -h|--help)
+            echo "Usage: $0 [-v]"
+            echo "  -v, --verbose   Print additional details (table checks, CLI output)"
+            exit 0
+            ;;
+    esac
+done
+
 STACK_NAME="drawing-app-${ENVIRONMENT}"
 REGION="${AWS_REGION:-us-east-1}"
 
@@ -31,12 +44,14 @@ if ! command -v sam &> /dev/null; then
 fi
 
 # Check if DynamoDB tables exist
-echo "Checking DynamoDB tables..."
+if $VERBOSE; then
+    echo "Checking DynamoDB tables..."
+fi
 TABLES=("Rooms-${ENVIRONMENT}" "CanvasObjects-${ENVIRONMENT}" "Connections-${ENVIRONMENT}" "DeploymentStats-${ENVIRONMENT}")
 
 for table in "${TABLES[@]}"; do
     if aws dynamodb describe-table --table-name "$table" --region "$REGION" &>/dev/null; then
-        echo "✓ Table exists: $table"
+        $VERBOSE && echo "✓ Table exists: $table"
     else
         echo "❌ Table not found: $table"
         echo "Run: cd backend/infrastructure && ENVIRONMENT=$ENVIRONMENT ./setup-dynamodb.sh"
@@ -44,7 +59,9 @@ for table in "${TABLES[@]}"; do
     fi
 done
 
-echo ""
+if $VERBOSE; then
+    echo ""
+fi
 
 # Navigate to Lambda directory
 cd backend/lambda
@@ -131,4 +148,3 @@ else
 fi
 
 cd ../..
-

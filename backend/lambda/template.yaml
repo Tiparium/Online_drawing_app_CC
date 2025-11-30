@@ -116,7 +116,7 @@ Resources:
       Name: !Sub 'drawing-app-rest-${Environment}'
       StageName: !Ref Environment
       Cors:
-        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
         AllowOrigin: "'*'"
 
@@ -261,6 +261,12 @@ Resources:
             RestApiId: !Ref DrawingRestApi
             Path: /api/rooms/{roomId}/strokes
             Method: POST
+        DeleteStrokes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/strokes
+            Method: DELETE
         OptionsStrokes:
           Type: Api
           Properties:
@@ -321,4 +327,3 @@ Outputs:
   StackName:
     Description: CloudFormation Stack Name
     Value: !Ref AWS::StackName
-

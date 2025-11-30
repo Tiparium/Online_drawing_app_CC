@@ -2,13 +2,23 @@
 // Handles: GET /api/rooms/{roomId}/strokes, POST /api/rooms/{roomId}/strokes
 
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, QueryCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, QueryCommand, PutCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const { v4: uuidv4 } = require('uuid');
 
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STROKES_TABLE = process.env.STROKES_TABLE || 'CanvasObjects-production';
+const TS_MULTIPLIER = 1000;
+
+function makeTimestampKey() {
+    return Date.now() * TS_MULTIPLIER + Math.floor(Math.random() * TS_MULTIPLIER);
+}
+
+function makeUserSeqKey(userId, seq) {
+    const padded = String(seq ?? 0).padStart(20, '0');
+    return `${userId || 'unknown'}#${padded}`;
+}
 
 // Helper to format response with CORS
 function response(statusCode, body) {
@@ -18,7 +28,7 @@ function response(statusCode, body) {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-            'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+            'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS'
         },
         body: JSON.stringify(body)
     };
@@ -42,6 +52,39 @@ exports.handler = async (event) => {
         
         // GET /api/rooms/{roomId}/strokes - Get all strokes for room
         if (method === 'GET') {
+            const queryParams = event.queryStringParameters || {};
+            const filterUserId = queryParams.userId;
+            const sinceSeq = Number(queryParams.sinceSeq);
+
+            // Per-user delta path (uses GSI on roomId + userSeqKey)
+            if (filterUserId && Number.isFinite(sinceSeq)) {
+                const startKey = makeUserSeqKey(filterUserId, sinceSeq + 1);
+                const gsiResult = await ddb.send(new QueryCommand({
+                    TableName: STROKES_TABLE,
+                    IndexName: 'StrokesByUserSeq',
+                    KeyConditionExpression: 'roomId = :roomId AND userSeqKey >= :start',
+                    ExpressionAttributeValues: {
+                        ':roomId': roomId,
+                        ':start': startKey
+                    },
+                    Limit: 500
+                }));
+
+                const strokes = (gsiResult.Items || []).map(item => ({
+                    path: item.path,
+                    strokeColor: item.strokeColor || '#000000',
+                    strokeWidth: item.strokeWidth || 5,
+                    smoothing: item.smoothing || 0,
+                    userId: item.userId || 'unknown',
+                    timestamp: item.timestamp,
+                    seq: item.seq || 0,
+                    shapeType: item.shapeType,
+                    objectData: item.objectData
+                }));
+
+                return response(200, { strokes });
+            }
+
             const result = await ddb.send(new QueryCommand({
                 TableName: STROKES_TABLE,
                 KeyConditionExpression: 'roomId = :roomId',
@@ -58,7 +101,10 @@ exports.handler = async (event) => {
                 strokeWidth: item.strokeWidth || 5,
                 smoothing: item.smoothing || 0,
                 userId: item.userId || 'unknown',
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                seq: item.seq || 0,
+                shapeType: item.shapeType,
+                objectData: item.objectData
             }));
             
             console.log(`Returning ${strokes.length} strokes for room ${roomId}`);
@@ -69,21 +115,26 @@ exports.handler = async (event) => {
         // POST /api/rooms/{roomId}/strokes - Save new stroke
         if (method === 'POST') {
             const body = JSON.parse(event.body || '{}');
-            const { path, strokeColor, strokeWidth, smoothing, userId } = body;
+            const { path, strokeColor, strokeWidth, smoothing, userId, seq, shapeType, objectData } = body;
             
-            if (!path) {
-                return response(400, { error: 'path is required' });
+            if (!path && !objectData) {
+                return response(400, { error: 'path or objectData is required' });
             }
             
+            const tsKey = makeTimestampKey();
             const item = {
                 roomId: roomId,
-                objectId: uuidv4(),
+                timestamp: tsKey,
+                objectId: uuidv4(), // non-key identifier retained for debugging
                 path: path,
                 strokeColor: strokeColor || '#000000',
                 strokeWidth: strokeWidth || 5,
                 smoothing: smoothing || 0,
                 userId: userId || 'unknown',
-                timestamp: Date.now()
+                seq: Number.isFinite(seq) ? Number(seq) : 0,
+                userSeqKey: makeUserSeqKey(userId, Number.isFinite(seq) ? Number(seq) : 0),
+                shapeType: shapeType,
+                objectData: objectData
             };
             
             await ddb.send(new PutCommand({
@@ -94,6 +145,49 @@ exports.handler = async (event) => {
             console.log('Saved stroke:', item.objectId);
             
             return response(200, { ok: true });
+        }
+
+        // DELETE /api/rooms/{roomId}/strokes - Clear all strokes for room
+        if (method === 'DELETE') {
+            let lastEvaluatedKey;
+            let deleted = 0;
+
+            do {
+                const query = await ddb.send(new QueryCommand({
+                    TableName: STROKES_TABLE,
+                    KeyConditionExpression: 'roomId = :roomId',
+                    ExpressionAttributeValues: {
+                        ':roomId': roomId
+                    },
+                    ExclusiveStartKey: lastEvaluatedKey
+                }));
+
+                const items = query.Items || [];
+                lastEvaluatedKey = query.LastEvaluatedKey;
+
+                for (let i = 0; i < items.length; i += 25) {
+                    const batch = items.slice(i, i + 25);
+                    const requests = batch.map(item => ({
+                        DeleteRequest: {
+                            Key: {
+                                roomId,
+                                timestamp: item.timestamp
+                            }
+                        }
+                    }));
+                    if (requests.length > 0) {
+                        await ddb.send(new BatchWriteCommand({
+                            RequestItems: {
+                                [STROKES_TABLE]: requests
+                            }
+                        }));
+                        deleted += requests.length;
+                    }
+                }
+            } while (lastEvaluatedKey);
+
+            console.log(`Deleted ${deleted} strokes for room ${roomId}`);
+            return response(200, { ok: true, deleted });
         }
         
         return response(405, { error: 'Method not allowed' });
@@ -106,4 +200,3 @@ exports.handler = async (event) => {
         });
     }
 };
-
