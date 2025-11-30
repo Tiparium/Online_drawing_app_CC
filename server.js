@@ -158,8 +158,8 @@ app.get('/api/rooms/:roomId/strokes', async (req, res) => {
 
 app.post('/api/rooms/:roomId/strokes', async (req, res) => {
    const { roomId } = req.params;
-   const { path: pathData, strokeColor, strokeWidth, smoothing, userId, seq } = req.body || {};
-   if (!pathData) return res.status(400).json({ error: 'path required' });
+   const { path: pathData, strokeColor, strokeWidth, smoothing, userId, seq, shapeType, objectData } = req.body || {};
+   if (!pathData && !objectData) return res.status(400).json({ error: 'path or objectData required' });
    const stroke = {
       path: pathData,
       strokeColor: strokeColor || '#000000',
@@ -167,6 +167,8 @@ app.post('/api/rooms/:roomId/strokes', async (req, res) => {
       smoothing: smoothing || 0,
       userId: userId || 'unknown',
       seq: Number.isFinite(seq) ? Number(seq) : 0,
+      shapeType,
+      objectData,
       timestamp: Date.now()
    };
    try {
@@ -271,7 +273,7 @@ ws.send(JSON.stringify({
 
             case 'drawingUpdate':
                const roomId = data.roomId || users.get(userId)?.roomId || null;
-               if (data.action === 'add' && roomId) {
+               if (data.action !== 'remove' && roomId) {
                   persistStroke(roomId, {
                      path: data.path,
                      strokeColor: data.strokeColor,
@@ -279,7 +281,9 @@ ws.send(JSON.stringify({
                      smoothing: data.smoothing,
                      userId,
                      seq: Number.isFinite(data.seq) ? Number(data.seq) : 0,
-                     timestamp: Date.now()
+                     timestamp: Date.now(),
+                     shapeType: data.shapeType,
+                     objectData: data.objectData
                   }).catch(err => console.error('Failed to persist stroke', err));
                }
 
@@ -292,6 +296,8 @@ ws.send(JSON.stringify({
                   strokeColor: data.strokeColor,
                   strokeWidth: data.strokeWidth,
                   smoothing: data.smoothing,
+                  shapeType: data.shapeType,
+                  objectData: data.objectData,
                   seq: data.seq,
                   roomId
                }, userId, roomId);

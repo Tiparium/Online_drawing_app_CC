@@ -255,8 +255,8 @@ exports.handler = async (event) => {
             }
             
             case 'drawingUpdate': {
-                // Save to DynamoDB if adding new stroke
-                if (body.action === 'add' && roomId) {
+                // Save to DynamoDB if adding or updating
+                if (body.action !== 'remove' && roomId) {
                     const timestampKey = makeTimestampKey();
                     const seq = Number.isFinite(body.seq) ? Number(body.seq) : 0;
                     
@@ -271,6 +271,8 @@ exports.handler = async (event) => {
                             strokeWidth: body.strokeWidth || 5,
                             smoothing: body.smoothing || 0,
                             userId: connectionId,
+                            shapeType: body.shapeType,
+                            objectData: body.objectData,
                             seq: seq,
                             userSeqKey: makeUserSeqKey(connectionId, seq),
                             timestamp: timestampKey
@@ -289,6 +291,8 @@ exports.handler = async (event) => {
                     strokeColor: body.strokeColor,
                     strokeWidth: body.strokeWidth,
                     smoothing: body.smoothing,
+                    shapeType: body.shapeType,
+                    objectData: body.objectData,
                     roomId: roomId,
                     seq: body.seq
                 }, connectionId, apiGateway);

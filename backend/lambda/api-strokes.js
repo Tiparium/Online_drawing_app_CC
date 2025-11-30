@@ -77,7 +77,9 @@ exports.handler = async (event) => {
                     smoothing: item.smoothing || 0,
                     userId: item.userId || 'unknown',
                     timestamp: item.timestamp,
-                    seq: item.seq || 0
+                    seq: item.seq || 0,
+                    shapeType: item.shapeType,
+                    objectData: item.objectData
                 }));
 
                 return response(200, { strokes });
@@ -99,7 +101,10 @@ exports.handler = async (event) => {
                 strokeWidth: item.strokeWidth || 5,
                 smoothing: item.smoothing || 0,
                 userId: item.userId || 'unknown',
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                seq: item.seq || 0,
+                shapeType: item.shapeType,
+                objectData: item.objectData
             }));
             
             console.log(`Returning ${strokes.length} strokes for room ${roomId}`);
@@ -110,10 +115,10 @@ exports.handler = async (event) => {
         // POST /api/rooms/{roomId}/strokes - Save new stroke
         if (method === 'POST') {
             const body = JSON.parse(event.body || '{}');
-            const { path, strokeColor, strokeWidth, smoothing, userId, seq } = body;
+            const { path, strokeColor, strokeWidth, smoothing, userId, seq, shapeType, objectData } = body;
             
-            if (!path) {
-                return response(400, { error: 'path is required' });
+            if (!path && !objectData) {
+                return response(400, { error: 'path or objectData is required' });
             }
             
             const tsKey = makeTimestampKey();
@@ -127,7 +132,9 @@ exports.handler = async (event) => {
                 smoothing: smoothing || 0,
                 userId: userId || 'unknown',
                 seq: Number.isFinite(seq) ? Number(seq) : 0,
-                userSeqKey: makeUserSeqKey(userId, Number.isFinite(seq) ? Number(seq) : 0)
+                userSeqKey: makeUserSeqKey(userId, Number.isFinite(seq) ? Number(seq) : 0),
+                shapeType: shapeType,
+                objectData: objectData
             };
             
             await ddb.send(new PutCommand({

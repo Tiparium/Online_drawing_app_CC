@@ -267,24 +267,28 @@ async function loadRoomStrokes(roomId) {
         resetCanvasState(roomId);
         const maxSeqByUser = new Map();
         strokes.forEach(stroke => {
-            if (!stroke.path) return;
-            const path = new fabric.Path(stroke.path, {
-                fill: '',
-                stroke: stroke.strokeColor || '#000000',
-                strokeWidth: stroke.strokeWidth || 5,
-                strokeLineCap: 'round',
-                strokeLineJoin: 'round',
-                selectable: false,
-                evented: false
-            });
-            path.set('userId', stroke.userId || 'unknown');
-            path.set('roomId', roomId);
-            path.set('smoothing', stroke.smoothing || 0);
-            canvas.add(path);
             const seqVal = typeof stroke.seq === 'number' ? stroke.seq : 0;
-            const prevMax = maxSeqByUser.get(path.get('userId')) ?? 0;
+            const userId = stroke.userId || 'unknown';
+            if (stroke.shapeType && stroke.objectData) {
+                applySerializedObject(stroke.objectData, roomId);
+            } else if (stroke.path) {
+                const path = new fabric.Path(stroke.path, {
+                    fill: '',
+                    stroke: stroke.strokeColor || '#000000',
+                    strokeWidth: stroke.strokeWidth || 5,
+                    strokeLineCap: 'round',
+                    strokeLineJoin: 'round',
+                    selectable: false,
+                    evented: false
+                });
+                path.set('userId', userId);
+                path.set('roomId', roomId);
+                path.set('smoothing', stroke.smoothing || 0);
+                canvas.add(path);
+            }
+            const prevMax = maxSeqByUser.get(userId) ?? 0;
             if (seqVal > prevMax) {
-                maxSeqByUser.set(path.get('userId'), seqVal);
+                maxSeqByUser.set(userId, seqVal);
             }
         });
         maxSeqByUser.forEach((seq, userId) => {
@@ -1194,7 +1198,7 @@ function handleWebSocketMessage(data) {
             break;
             
         case 'drawingUpdate':
-            handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing, data.seq);
+            handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing, data.seq, data.shapeType, data.objectData);
             break;
 
         case 'canvasCleared':
@@ -1218,37 +1222,63 @@ function sendWebSocketMessage(type, data) {
 // REMOTE DRAWING HANDLING
 // ============================================================================
 
-function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0, seq = null) {
+function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0, seq = null, shapeType = null, objectData = null) {
     if (roomId !== getActiveRoomId()) return;
     const user = getRemoteUsers(roomId).get(userId);
     if (!user) return;
     
-    if (typeof seq === 'number') {
+    if (action !== 'live' && typeof seq === 'number') {
         const status = noteSeqForUser(userId, seq);
         if (status === 'stale') return;
         if (status === 'gap') {
-            // Fetch missing ops and also reconcile active users list on gaps
+            // Fetch missing ops on gaps
             fetchUserDeltas(roomId, userId, (userSeqById.get(userId) || 0) - 1);
-            // Ask server for current users in room to prune stale entries
-            sendWebSocketMessage('existingUsersInRoom', { roomId });
             return;
         }
     }
     
-    if (action === 'add' && pathData) {
-        const path = new fabric.Path(pathData, {
-            fill: '',
-            stroke: strokeColor || user.color,
-            strokeWidth: strokeWidth || user.brushSize,
-            strokeLineCap: 'round',
-            strokeLineJoin: 'round',
-            selectable: false,
-            evented: false
-        });
-        path.set('userId', userId);
-        path.set('roomId', roomId);
-        path.set('smoothing', smoothing || user.smoothing || 0);
-        canvas.add(path);
+    if (action === 'add') {
+        if (shapeType && objectData) {
+            applySerializedObject(objectData, roomId);
+        } else if (pathData) {
+            const path = new fabric.Path(pathData, {
+                fill: '',
+                stroke: strokeColor || user.color,
+                strokeWidth: strokeWidth || user.brushSize,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                selectable: false,
+                evented: false
+            });
+            path.set('userId', userId);
+            path.set('roomId', roomId);
+            path.set('smoothing', smoothing || user.smoothing || 0);
+            canvas.add(path);
+        }
+        canvas.renderAll();
+    } else if (action === 'live') {
+        if (shapeType && objectData) {
+            applySerializedObject(objectData, roomId);
+            canvas.renderAll();
+        }
+    } else if (action === 'update') {
+        if (shapeType && objectData) {
+            applySerializedObject(objectData, roomId);
+        } else if (pathData) {
+            const path = new fabric.Path(pathData, {
+                fill: '',
+                stroke: strokeColor || user.color,
+                strokeWidth: strokeWidth || user.brushSize,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                selectable: false,
+                evented: false
+            });
+            path.set('userId', userId);
+            path.set('roomId', roomId);
+            path.set('smoothing', smoothing || user.smoothing || 0);
+            canvas.add(path);
+        }
         canvas.renderAll();
     }
 }
@@ -1257,22 +1287,25 @@ async function fetchUserDeltas(roomId, userId, sinceSeq) {
     try {
         const strokes = await apiGetUserStrokesSince(roomId, userId, sinceSeq);
         strokes.forEach(stroke => {
-            if (!stroke.path) return;
             const status = noteSeqForUser(stroke.userId || userId, typeof stroke.seq === 'number' ? stroke.seq : 0);
             if (status === 'stale') return;
-            const path = new fabric.Path(stroke.path, {
-                fill: '',
-                stroke: stroke.strokeColor || '#000000',
-                strokeWidth: stroke.strokeWidth || 5,
-                strokeLineCap: 'round',
-                strokeLineJoin: 'round',
-                selectable: false,
-                evented: false
-            });
-            path.set('userId', stroke.userId || userId);
-            path.set('roomId', roomId);
-            path.set('smoothing', stroke.smoothing || 0);
-            canvas.add(path);
+            if (stroke.shapeType && stroke.objectData) {
+                applySerializedObject(stroke.objectData, roomId);
+            } else if (stroke.path) {
+                const path = new fabric.Path(stroke.path, {
+                    fill: '',
+                    stroke: stroke.strokeColor || '#000000',
+                    strokeWidth: stroke.strokeWidth || 5,
+                    strokeLineCap: 'round',
+                    strokeLineJoin: 'round',
+                    selectable: false,
+                    evented: false
+                });
+                path.set('userId', stroke.userId || userId);
+                path.set('roomId', roomId);
+                path.set('smoothing', stroke.smoothing || 0);
+                canvas.add(path);
+            }
         });
         canvas.renderAll();
     } catch (err) {
@@ -1331,6 +1364,12 @@ const deployCounterEl = document.getElementById('deployCounter');
 const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
 let defaultRoomSettings = null;
 const userSeqById = new Map(); // userId -> last seq applied
+const LIVE_CURSOR_THROTTLE_MS = 50;
+const LIVE_DRAG_THROTTLE_MS = 80;
+const STROKE_POLL_MS = 5000;
+
+let lastCursorSend = 0;
+let lastDragSend = 0;
 
 function initDefaultRoomSettings() {
     if (defaultRoomSettings) return;
@@ -1358,6 +1397,88 @@ function noteSeqForUser(userId, seq) {
     const status = last !== undefined && seq > last + 1 ? 'gap' : 'ok';
     userSeqById.set(userId, seq);
     return status;
+}
+
+function serializeFabricObject(obj) {
+    return {
+        objectId: obj.objectId,
+        type: obj.type,
+        left: obj.left,
+        top: obj.top,
+        width: obj.width,
+        height: obj.height,
+        scaleX: obj.scaleX,
+        scaleY: obj.scaleY,
+        angle: obj.angle,
+        fill: obj.fill,
+        stroke: obj.stroke,
+        strokeWidth: obj.strokeWidth,
+        radius: obj.radius,
+        rx: obj.rx,
+        ry: obj.ry,
+        text: obj.text,
+        fontSize: obj.fontSize,
+        fontFamily: obj.fontFamily
+    };
+}
+
+function findObjectById(objectId) {
+    return canvas.getObjects().find(o => o.objectId === objectId);
+}
+
+function applySerializedObject(objData, roomId) {
+    if (!objData || !objData.type) return;
+    const existing = objData.objectId ? findObjectById(objData.objectId) : null;
+    const commonProps = {
+        left: objData.left,
+        top: objData.top,
+        scaleX: objData.scaleX,
+        scaleY: objData.scaleY,
+        angle: objData.angle,
+        fill: objData.fill,
+        stroke: objData.stroke,
+        strokeWidth: objData.strokeWidth,
+        selectable: true,
+        evented: true
+    };
+
+    let obj = existing;
+    if (!obj) {
+        if (objData.type === 'rect') {
+            obj = new fabric.Rect({
+                ...commonProps,
+                width: objData.width,
+                height: objData.height
+            });
+        } else if (objData.type === 'circle') {
+            obj = new fabric.Circle({
+                ...commonProps,
+                radius: objData.radius || Math.max(objData.width || 0, objData.height || 0) / 2
+            });
+        } else if (objData.type === 'i-text' || objData.type === 'textbox' || objData.type === 'text') {
+            obj = new fabric.IText(objData.text || '', {
+                ...commonProps,
+                fontSize: objData.fontSize || 20,
+                fontFamily: objData.fontFamily || 'Arial'
+            });
+        }
+    } else {
+        obj.set(commonProps);
+        if (obj.type === 'rect') {
+            obj.set({ width: objData.width, height: objData.height });
+        } else if (obj.type === 'circle') {
+            obj.set({ radius: objData.radius });
+        } else if (obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') {
+            obj.set({ text: objData.text, fontSize: objData.fontSize, fontFamily: objData.fontFamily });
+        }
+    }
+
+    if (!obj) return;
+    obj.objectId = objData.objectId || obj.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    obj.roomId = roomId;
+    if (!existing) {
+        canvas.add(obj);
+    }
 }
 
 function getStrokeCache(roomId = getActiveRoomId()) {
@@ -1451,12 +1572,100 @@ smoothingSlider.addEventListener('input', (e) => {
 // Cursor tracking
 canvas.on('mouse:move', (e) => {
     if (localUser && isConnected && currentRoom) {
+        const now = Date.now();
+        if (now - lastCursorSend < LIVE_CURSOR_THROTTLE_MS) return;
         const pointer = canvas.getPointer(e.e);
         localUser.cursor = { x: pointer.x, y: pointer.y };
         sendWebSocketMessage('cursorMove', {
             cursor: localUser.cursor
         });
+        lastCursorSend = now;
     }
+});
+
+// Prevent multi-select moves unless in select mode
+function collapseActiveSelectionIfNeeded(target) {
+    if (currentMode === 'select') return;
+    if (target && target.type === 'activeSelection') {
+        const first = target._objects && target._objects[0];
+        if (first) {
+            canvas.discardActiveObject();
+            canvas.setActiveObject(first);
+            canvas.requestRenderAll();
+        }
+    }
+}
+
+canvas.on('selection:created', (e) => {
+    collapseActiveSelectionIfNeeded(e.target);
+});
+
+canvas.on('selection:updated', (e) => {
+    collapseActiveSelectionIfNeeded(e.target);
+});
+
+canvas.on('object:modified', (e) => {
+    const target = e.target;
+    if (!target) return;
+    if (!['rect', 'circle', 'i-text', 'textbox', 'text', 'activeSelection'].includes(target.type)) return;
+    const roomId = currentRoom ? currentRoom.id : null;
+    const targets = target.type === 'activeSelection' ? target._objects : [target];
+    targets.forEach(obj => {
+        const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+        obj.objectId = obj.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const objectData = serializeFabricObject(obj);
+        const payload = {
+            action: 'update',
+            roomId,
+            shapeType: obj.type,
+            objectData,
+            seq,
+            strokeColor: obj.stroke,
+            strokeWidth: obj.strokeWidth
+        };
+        sendWebSocketMessage('drawingUpdate', payload);
+        if (roomId) {
+            persistStrokeFallback(roomId, {
+                userId: localUser ? localUser.userId : 'local',
+                seq,
+                shapeType: obj.type,
+                objectData
+            });
+        }
+    });
+});
+
+function broadcastLiveTransform(target) {
+    if (!target || !['rect', 'circle', 'i-text', 'textbox', 'text', 'activeSelection'].includes(target.type)) return;
+    const now = Date.now();
+    if (now - lastDragSend < LIVE_DRAG_THROTTLE_MS) return;
+    const roomId = currentRoom ? currentRoom.id : null;
+    const targets = target.type === 'activeSelection' ? target._objects : [target];
+    targets.forEach(obj => {
+        obj.objectId = obj.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const objectData = serializeFabricObject(obj);
+        sendWebSocketMessage('drawingUpdate', {
+            action: 'live',
+            roomId,
+            shapeType: obj.type,
+            objectData
+        });
+    });
+    lastDragSend = now;
+}
+
+canvas.on('object:moving', (e) => {
+    const active = e.target;
+    collapseActiveSelectionIfNeeded(active);
+    broadcastLiveTransform(active);
+});
+
+canvas.on('object:scaling', (e) => {
+    broadcastLiveTransform(e.target);
+});
+
+canvas.on('object:rotating', (e) => {
+    broadcastLiveTransform(e.target);
 });
 
 function resetCanvasState(roomId = getActiveRoomId()) {
@@ -1522,32 +1731,36 @@ function startRect(o) {
         canvas.renderAll();
     });
     
-        canvas.once('mouse:up', () => {
-            canvas.off('mouse:move');
-            canvas.off('mouse:down', startRect);
-            if (rect.path) {
-                const roomId = currentRoom ? currentRoom.id : null;
-            const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
-            const payload = {
+    canvas.once('mouse:up', () => {
+        canvas.off('mouse:move');
+        canvas.off('mouse:down', startRect);
+        const roomId = currentRoom ? currentRoom.id : null;
+        const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+        rect.objectId = rect.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const objectData = serializeFabricObject(rect);
+        const payload = {
+            path: rect.path,
+            action: 'add',
+            roomId,
+            strokeColor: rect.stroke,
+            strokeWidth: rect.strokeWidth,
+            smoothing: localUser ? localUser.smoothing : 0,
+            seq,
+            shapeType: 'rect',
+            objectData
+        };
+        sendWebSocketMessage('drawingUpdate', payload);
+        if (roomId) {
+            persistStrokeFallback(roomId, {
                 path: rect.path,
-                action: 'add',
-                roomId,
                 strokeColor: rect.stroke,
                 strokeWidth: rect.strokeWidth,
                 smoothing: localUser ? localUser.smoothing : 0,
-                seq
-            };
-            sendWebSocketMessage('drawingUpdate', payload);
-            if (roomId) {
-                persistStrokeFallback(roomId, {
-                    path: rect.path,
-                    strokeColor: rect.stroke,
-                    strokeWidth: rect.strokeWidth,
-                    smoothing: localUser ? localUser.smoothing : 0,
-                    userId: localUser ? localUser.userId : 'local',
-                    seq
-                });
-            }
+                userId: localUser ? localUser.userId : 'local',
+                seq,
+                shapeType: 'rect',
+                objectData
+            });
         }
     });
 }
@@ -1584,32 +1797,36 @@ function startCircle(o) {
         canvas.renderAll();
     });
     
-        canvas.once('mouse:up', () => {
-            canvas.off('mouse:move');
-            canvas.off('mouse:down', startCircle);
-            if (circle.path) {
-                const roomId = currentRoom ? currentRoom.id : null;
-            const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
-            const payload = {
+    canvas.once('mouse:up', () => {
+        canvas.off('mouse:move');
+        canvas.off('mouse:down', startCircle);
+        const roomId = currentRoom ? currentRoom.id : null;
+        const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+        circle.objectId = circle.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const objectData = serializeFabricObject(circle);
+        const payload = {
+            path: circle.path,
+            action: 'add',
+            roomId,
+            strokeColor: circle.stroke,
+            strokeWidth: circle.strokeWidth,
+            smoothing: localUser ? localUser.smoothing : 0,
+            seq,
+            shapeType: 'circle',
+            objectData
+        };
+        sendWebSocketMessage('drawingUpdate', payload);
+        if (roomId) {
+            persistStrokeFallback(roomId, {
                 path: circle.path,
-                action: 'add',
-                roomId,
                 strokeColor: circle.stroke,
                 strokeWidth: circle.strokeWidth,
                 smoothing: localUser ? localUser.smoothing : 0,
-                seq
-            };
-            sendWebSocketMessage('drawingUpdate', payload);
-            if (roomId) {
-                persistStrokeFallback(roomId, {
-                    path: circle.path,
-                    strokeColor: circle.stroke,
-                    strokeWidth: circle.strokeWidth,
-                    smoothing: localUser ? localUser.smoothing : 0,
-                    userId: localUser ? localUser.userId : 'local',
-                    seq
-                });
-            }
+                userId: localUser ? localUser.userId : 'local',
+                seq,
+                shapeType: 'circle',
+                objectData
+            });
         }
     });
 }
@@ -1624,9 +1841,87 @@ textBtn.addEventListener('click', () => {
         fontSize: 20,
         fill: localUser ? localUser.color : '#000000'
     });
+    text.objectId = text.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     canvas.add(text);
     canvas.setActiveObject(text);
     canvas.renderAll();
+    const roomId = currentRoom ? currentRoom.id : null;
+    const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+    const objectData = serializeFabricObject(text);
+    const payload = {
+        action: 'add',
+        roomId,
+        shapeType: 'i-text',
+        objectData,
+        seq,
+        strokeColor: text.fill,
+        strokeWidth: 1
+    };
+    sendWebSocketMessage('drawingUpdate', payload);
+    if (roomId) {
+        persistStrokeFallback(roomId, {
+            userId: localUser ? localUser.userId : 'local',
+            seq,
+            shapeType: 'i-text',
+            objectData
+        });
+    }
+});
+
+// Broadcast text edits when editing ends
+canvas.on('text:editing:exited', (e) => {
+    const target = e.target;
+    if (!target || !['i-text', 'textbox', 'text'].includes(target.type)) return;
+    const roomId = currentRoom ? currentRoom.id : null;
+    const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+    target.objectId = target.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const objectData = serializeFabricObject(target);
+    const payload = {
+        action: 'update',
+        roomId,
+        shapeType: target.type,
+        objectData,
+        seq,
+        strokeColor: target.stroke || target.fill,
+        strokeWidth: target.strokeWidth || 1
+    };
+    sendWebSocketMessage('drawingUpdate', payload);
+    if (roomId) {
+        persistStrokeFallback(roomId, {
+            userId: localUser ? localUser.userId : 'local',
+            seq,
+            shapeType: target.type,
+            objectData
+        });
+    }
+});
+
+// Broadcast text edits per character
+canvas.on('text:changed', (e) => {
+    const target = e.target;
+    if (!target || !['i-text', 'textbox', 'text'].includes(target.type)) return;
+    const roomId = currentRoom ? currentRoom.id : null;
+    const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
+    target.objectId = target.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const objectData = serializeFabricObject(target);
+    const payload = {
+        action: 'update',
+        roomId,
+        shapeType: target.type,
+        objectData,
+        seq,
+        strokeColor: target.stroke || target.fill,
+        strokeWidth: target.strokeWidth || 1
+    };
+    sendWebSocketMessage('drawingUpdate', payload);
+    if (roomId) {
+        persistStrokeFallback(roomId, {
+            userId: localUser ? localUser.userId : 'local',
+            seq,
+            shapeType: target.type,
+            objectData
+        });
+    }
 });
 
 // Clear canvas
