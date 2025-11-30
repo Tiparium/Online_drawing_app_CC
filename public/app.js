@@ -319,6 +319,14 @@ function cleanupRoomState(roomId) {
     remoteMap.forEach(user => user.remove());
     remoteMap.clear();
 
+    // Clear any live stroke previews
+    liveStrokesByUser.forEach(path => {
+        if (path && path.canvas) {
+            canvas.remove(path);
+        }
+    });
+    liveStrokesByUser.clear();
+
     const usersList = document.getElementById('usersList');
     if (usersList) {
         usersList.innerHTML = '';
@@ -938,6 +946,21 @@ class SmoothedBrush extends fabric.PencilBrush {
 
         this.canvas.add(this._tempPath);
         this.canvas.renderAll();
+
+        // Broadcast live stroke to other users (throttled)
+        const now = Date.now();
+        if (localUser && currentRoom && now - lastLiveStrokeSend >= STROKE_LIVE_THROTTLE_MS) {
+            lastLiveStrokeSend = now;
+            const roomId = getActiveRoomId();
+            sendWebSocketMessage('drawingUpdate', {
+                path: pathData,
+                action: 'liveStroke',
+                roomId,
+                smoothing: this.smoothingLevel,
+                strokeColor: this.color,
+                strokeWidth: this.width
+            });
+        }
     }
 
     finalizePath(points, useCurves) {
@@ -1241,6 +1264,12 @@ function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(
         if (shapeType && objectData) {
             applySerializedObject(objectData, roomId);
         } else if (pathData) {
+            // Clear any live preview from this user before adding final stroke
+            const prev = liveStrokesByUser.get(userId);
+            if (prev) {
+                canvas.remove(prev);
+                liveStrokesByUser.delete(userId);
+            }
             const path = new fabric.Path(pathData, {
                 fill: '',
                 stroke: strokeColor || user.color,
@@ -1261,6 +1290,27 @@ function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(
             applySerializedObject(objectData, roomId);
             canvas.renderAll();
         }
+    } else if (action === 'liveStroke' && pathData) {
+        // Remove previous preview for this user
+        const prev = liveStrokesByUser.get(userId);
+        if (prev) {
+            canvas.remove(prev);
+        }
+        const path = new fabric.Path(pathData, {
+            fill: '',
+            stroke: strokeColor || user.color,
+            strokeWidth: strokeWidth || user.brushSize,
+            strokeLineCap: 'round',
+            strokeLineJoin: 'round',
+            selectable: false,
+            evented: false
+        });
+        path.set('userId', userId);
+        path.set('roomId', roomId);
+        path.set('smoothing', smoothing || user.smoothing || 0);
+        liveStrokesByUser.set(userId, path);
+        canvas.add(path);
+        canvas.renderAll();
     } else if (action === 'update') {
         if (shapeType && objectData) {
             applySerializedObject(objectData, roomId);
@@ -1367,9 +1417,12 @@ const userSeqById = new Map(); // userId -> last seq applied
 const LIVE_CURSOR_THROTTLE_MS = 50;
 const LIVE_DRAG_THROTTLE_MS = 80;
 const STROKE_POLL_MS = 5000;
+const STROKE_LIVE_THROTTLE_MS = 120;
 
 let lastCursorSend = 0;
 let lastDragSend = 0;
+let lastLiveStrokeSend = 0;
+const liveStrokesByUser = new Map(); // userId -> fabric.Path
 
 function initDefaultRoomSettings() {
     if (defaultRoomSettings) return;
