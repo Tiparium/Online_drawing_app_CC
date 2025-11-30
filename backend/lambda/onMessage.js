@@ -11,6 +11,16 @@ const ddb = DynamoDBDocumentClient.from(ddbClient);
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'Connections-production';
 const CANVAS_OBJECTS_TABLE = process.env.CANVAS_OBJECTS_TABLE || 'CanvasObjects-production';
 const MAX_BATCH = 25;
+const TS_MULTIPLIER = 1000;
+
+function makeTimestampKey() {
+    return Date.now() * TS_MULTIPLIER + Math.floor(Math.random() * TS_MULTIPLIER);
+}
+
+function makeUserSeqKey(userId, seq) {
+    const padded = String(seq ?? 0).padStart(20, '0');
+    return `${userId || 'unknown'}#${padded}`;
+}
 
 // Broadcast message to all connections in a room except sender
 async function broadcastToRoom(roomId, message, excludeConnectionId, apiGateway) {
@@ -247,23 +257,27 @@ exports.handler = async (event) => {
             case 'drawingUpdate': {
                 // Save to DynamoDB if adding new stroke
                 if (body.action === 'add' && roomId) {
-                    const objectId = body.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    const timestampKey = makeTimestampKey();
+                    const seq = Number.isFinite(body.seq) ? Number(body.seq) : 0;
                     
                     await ddb.send(new PutCommand({
                         TableName: CANVAS_OBJECTS_TABLE,
                         Item: {
                             roomId: roomId,
-                            objectId: objectId,
+                            timestamp: timestampKey,
+                            objectId: body.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                             path: body.path,
                             strokeColor: body.strokeColor || '#000000',
                             strokeWidth: body.strokeWidth || 5,
                             smoothing: body.smoothing || 0,
                             userId: connectionId,
-                            timestamp: Date.now()
+                            seq: seq,
+                            userSeqKey: makeUserSeqKey(connectionId, seq),
+                            timestamp: timestampKey
                         }
                     }));
                     
-                    console.log('Saved drawing to DynamoDB:', objectId);
+                    console.log('Saved drawing to DynamoDB with timestamp:', timestampKey, 'seq:', seq);
                 }
                 
                 // Broadcast to all users in room
@@ -275,7 +289,8 @@ exports.handler = async (event) => {
                     strokeColor: body.strokeColor,
                     strokeWidth: body.strokeWidth,
                     smoothing: body.smoothing,
-                    roomId: roomId
+                    roomId: roomId,
+                    seq: body.seq
                 }, connectionId, apiGateway);
                 
                 break;

@@ -82,6 +82,17 @@ async function apiGetRoomStrokes(roomId) {
     return data.strokes || [];
 }
 
+async function apiGetUserStrokesSince(roomId, userId, sinceSeq) {
+    const params = new URLSearchParams({
+        userId,
+        sinceSeq: String(sinceSeq)
+    });
+    const res = await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/strokes?${params.toString()}`);
+    if (!res.ok) throw new Error(`user strokes fetch failed: ${res.status}`);
+    const data = await res.json();
+    return data.strokes || [];
+}
+
 async function apiPersistStroke(roomId, stroke) {
     try {
         await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/strokes`, {
@@ -252,13 +263,14 @@ function joinRoom(roomId) {
 
 async function loadRoomStrokes(roomId) {
     try {
-    const strokes = await apiGetRoomStrokes(roomId);
-    resetCanvasState(roomId);
-    strokes.forEach(stroke => {
-        if (!stroke.path) return;
-        const path = new fabric.Path(stroke.path, {
-            fill: '',
-            stroke: stroke.strokeColor || '#000000',
+        const strokes = await apiGetRoomStrokes(roomId);
+        resetCanvasState(roomId);
+        const maxSeqByUser = new Map();
+        strokes.forEach(stroke => {
+            if (!stroke.path) return;
+            const path = new fabric.Path(stroke.path, {
+                fill: '',
+                stroke: stroke.strokeColor || '#000000',
                 strokeWidth: stroke.strokeWidth || 5,
                 strokeLineCap: 'round',
                 strokeLineJoin: 'round',
@@ -269,6 +281,14 @@ async function loadRoomStrokes(roomId) {
             path.set('roomId', roomId);
             path.set('smoothing', stroke.smoothing || 0);
             canvas.add(path);
+            const seqVal = typeof stroke.seq === 'number' ? stroke.seq : 0;
+            const prevMax = maxSeqByUser.get(path.get('userId')) ?? 0;
+            if (seqVal > prevMax) {
+                maxSeqByUser.set(path.get('userId'), seqVal);
+            }
+        });
+        maxSeqByUser.forEach((seq, userId) => {
+            userSeqById.set(userId, seq);
         });
         canvas.renderAll();
     } catch (err) {
@@ -954,20 +974,23 @@ class SmoothedBrush extends fabric.PencilBrush {
 
         // Only send once stroke is finalized (after momentum finishes)
         if (localUser && currentRoom) {
+            const seq = getNextSeqForUser(localUser.userId);
             sendWebSocketMessage('drawingUpdate', {
                 path: pathData,
                 action: 'add',
                 roomId,
                 smoothing: this.smoothingLevel,
                 strokeColor: this.color,
-                strokeWidth: this.width
+                strokeWidth: this.width,
+                seq
             });
             persistStrokeFallback(roomId, {
                 path: pathData,
                 strokeColor: this.color,
                 strokeWidth: this.width,
                 smoothing: this.smoothingLevel,
-                userId: localUser.userId
+                userId: localUser.userId,
+                seq
             });
         }
         
@@ -1156,7 +1179,7 @@ function handleWebSocketMessage(data) {
             break;
             
         case 'drawingUpdate':
-            handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing);
+            handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing, data.seq);
             break;
 
         case 'canvasCleared':
@@ -1180,10 +1203,19 @@ function sendWebSocketMessage(type, data) {
 // REMOTE DRAWING HANDLING
 // ============================================================================
 
-function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0) {
+function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0, seq = null) {
     if (roomId !== getActiveRoomId()) return;
     const user = getRemoteUsers(roomId).get(userId);
     if (!user) return;
+    
+    if (typeof seq === 'number') {
+        const status = noteSeqForUser(userId, seq);
+        if (status === 'stale') return;
+        if (status === 'gap') {
+            fetchUserDeltas(roomId, userId, (userSeqById.get(userId) || 0) - 1);
+            return;
+        }
+    }
     
     if (action === 'add' && pathData) {
         const path = new fabric.Path(pathData, {
@@ -1200,6 +1232,33 @@ function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(
         path.set('smoothing', smoothing || user.smoothing || 0);
         canvas.add(path);
         canvas.renderAll();
+    }
+}
+
+async function fetchUserDeltas(roomId, userId, sinceSeq) {
+    try {
+        const strokes = await apiGetUserStrokesSince(roomId, userId, sinceSeq);
+        strokes.forEach(stroke => {
+            if (!stroke.path) return;
+            const status = noteSeqForUser(stroke.userId || userId, typeof stroke.seq === 'number' ? stroke.seq : 0);
+            if (status === 'stale') return;
+            const path = new fabric.Path(stroke.path, {
+                fill: '',
+                stroke: stroke.strokeColor || '#000000',
+                strokeWidth: stroke.strokeWidth || 5,
+                strokeLineCap: 'round',
+                strokeLineJoin: 'round',
+                selectable: false,
+                evented: false
+            });
+            path.set('userId', stroke.userId || userId);
+            path.set('roomId', roomId);
+            path.set('smoothing', stroke.smoothing || 0);
+            canvas.add(path);
+        });
+        canvas.renderAll();
+    } catch (err) {
+        console.error('Failed to fetch user deltas', err);
     }
 }
 
@@ -1253,6 +1312,7 @@ const fileInput = document.getElementById('fileInput');
 const deployCounterEl = document.getElementById('deployCounter');
 const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
 let defaultRoomSettings = null;
+const userSeqById = new Map(); // userId -> last seq applied
 
 function initDefaultRoomSettings() {
     if (defaultRoomSettings) return;
@@ -1264,6 +1324,23 @@ function initDefaultRoomSettings() {
 }
 
 initDefaultRoomSettings();
+
+function getNextSeqForUser(userId) {
+    const last = userSeqById.get(userId) ?? 0;
+    const next = last + 1;
+    userSeqById.set(userId, next);
+    return next;
+}
+
+function noteSeqForUser(userId, seq) {
+    const last = userSeqById.get(userId);
+    if (last !== undefined && seq <= last) {
+        return 'stale';
+    }
+    const status = last !== undefined && seq > last + 1 ? 'gap' : 'ok';
+    userSeqById.set(userId, seq);
+    return status;
+}
 
 function getStrokeCache(roomId = getActiveRoomId()) {
     if (!strokeCachesByRoom.has(roomId)) {
@@ -1432,13 +1509,15 @@ function startRect(o) {
             canvas.off('mouse:down', startRect);
             if (rect.path) {
                 const roomId = currentRoom ? currentRoom.id : null;
+            const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
             const payload = {
                 path: rect.path,
                 action: 'add',
                 roomId,
                 strokeColor: rect.stroke,
                 strokeWidth: rect.strokeWidth,
-                smoothing: localUser ? localUser.smoothing : 0
+                smoothing: localUser ? localUser.smoothing : 0,
+                seq
             };
             sendWebSocketMessage('drawingUpdate', payload);
             if (roomId) {
@@ -1447,7 +1526,8 @@ function startRect(o) {
                     strokeColor: rect.stroke,
                     strokeWidth: rect.strokeWidth,
                     smoothing: localUser ? localUser.smoothing : 0,
-                    userId: localUser ? localUser.userId : 'local'
+                    userId: localUser ? localUser.userId : 'local',
+                    seq
                 });
             }
         }
@@ -1491,13 +1571,15 @@ function startCircle(o) {
             canvas.off('mouse:down', startCircle);
             if (circle.path) {
                 const roomId = currentRoom ? currentRoom.id : null;
+            const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
             const payload = {
                 path: circle.path,
                 action: 'add',
                 roomId,
                 strokeColor: circle.stroke,
                 strokeWidth: circle.strokeWidth,
-                smoothing: localUser ? localUser.smoothing : 0
+                smoothing: localUser ? localUser.smoothing : 0,
+                seq
             };
             sendWebSocketMessage('drawingUpdate', payload);
             if (roomId) {
@@ -1506,7 +1588,8 @@ function startCircle(o) {
                     strokeColor: circle.stroke,
                     strokeWidth: circle.strokeWidth,
                     smoothing: localUser ? localUser.smoothing : 0,
-                    userId: localUser ? localUser.userId : 'local'
+                    userId: localUser ? localUser.userId : 'local',
+                    seq
                 });
             }
         }
@@ -2193,6 +2276,7 @@ function ensureLocalUser(roomId = getActiveRoomId()) {
         cursor: { x: 0, y: 0 }
     };
     localUser = new User(`local_${Date.now()}`, userData, true, roomId);
+    userSeqById.set(localUser.userId, 0);
     setupLocalUser();
     return localUser;
 }

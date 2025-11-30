@@ -44,11 +44,14 @@ async function listStrokes(roomId) {
 
 async function persistStroke(roomId, stroke) {
    if (!roomId || !stroke) return;
+   const timestampKey = Date.now() * 1000 + Math.floor(Math.random() * 1000); // prevents millisecond collisions
    const item = {
       roomId,
-      objectId: uuidv4(),
+      timestamp: timestampKey,
       ...stroke,
-      timestamp: stroke.timestamp || Date.now()
+      seq: Number.isFinite(stroke.seq) ? Number(stroke.seq) : 0,
+      userSeqKey: `${stroke.userId || 'unknown'}#${String(Number.isFinite(stroke.seq) ? Number(stroke.seq) : 0).padStart(20, '0')}`,
+      timestamp: stroke.timestamp || timestampKey
    };
    await ddb.send(new PutCommand({ TableName: STROKES_TABLE, Item: item }));
 }
@@ -69,10 +72,10 @@ async function clearRoomStrokes(roomId) {
 
       // DynamoDB batch writes allow up to 25 items at a time
       for (let i = 0; i < items.length; i += 25) {
-         const batch = items.slice(i, i + 25).filter(item => item.objectId);
+         const batch = items.slice(i, i + 25).filter(item => typeof item.timestamp === 'number');
          if (batch.length === 0) continue;
          const deleteRequests = batch.map(item => ({
-            DeleteRequest: { Key: { roomId, objectId: item.objectId } }
+            DeleteRequest: { Key: { roomId, timestamp: item.timestamp } }
          }));
          await ddb.send(new BatchWriteCommand({
             RequestItems: { [STROKES_TABLE]: deleteRequests }
@@ -155,7 +158,7 @@ app.get('/api/rooms/:roomId/strokes', async (req, res) => {
 
 app.post('/api/rooms/:roomId/strokes', async (req, res) => {
    const { roomId } = req.params;
-   const { path: pathData, strokeColor, strokeWidth, smoothing, userId } = req.body || {};
+   const { path: pathData, strokeColor, strokeWidth, smoothing, userId, seq } = req.body || {};
    if (!pathData) return res.status(400).json({ error: 'path required' });
    const stroke = {
       path: pathData,
@@ -163,6 +166,7 @@ app.post('/api/rooms/:roomId/strokes', async (req, res) => {
       strokeWidth: strokeWidth || 5,
       smoothing: smoothing || 0,
       userId: userId || 'unknown',
+      seq: Number.isFinite(seq) ? Number(seq) : 0,
       timestamp: Date.now()
    };
    try {
@@ -274,6 +278,7 @@ ws.send(JSON.stringify({
                      strokeWidth: data.strokeWidth,
                      smoothing: data.smoothing,
                      userId,
+                     seq: Number.isFinite(data.seq) ? Number(data.seq) : 0,
                      timestamp: Date.now()
                   }).catch(err => console.error('Failed to persist stroke', err));
                }
@@ -287,6 +292,7 @@ ws.send(JSON.stringify({
                   strokeColor: data.strokeColor,
                   strokeWidth: data.strokeWidth,
                   smoothing: data.smoothing,
+                  seq: data.seq,
                   roomId
                }, userId, roomId);
                break;

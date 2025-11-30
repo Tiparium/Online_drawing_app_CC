@@ -9,6 +9,16 @@ const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-eas
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STROKES_TABLE = process.env.STROKES_TABLE || 'CanvasObjects-production';
+const TS_MULTIPLIER = 1000;
+
+function makeTimestampKey() {
+    return Date.now() * TS_MULTIPLIER + Math.floor(Math.random() * TS_MULTIPLIER);
+}
+
+function makeUserSeqKey(userId, seq) {
+    const padded = String(seq ?? 0).padStart(20, '0');
+    return `${userId || 'unknown'}#${padded}`;
+}
 
 // Helper to format response with CORS
 function response(statusCode, body) {
@@ -42,6 +52,37 @@ exports.handler = async (event) => {
         
         // GET /api/rooms/{roomId}/strokes - Get all strokes for room
         if (method === 'GET') {
+            const queryParams = event.queryStringParameters || {};
+            const filterUserId = queryParams.userId;
+            const sinceSeq = Number(queryParams.sinceSeq);
+
+            // Per-user delta path (uses GSI on roomId + userSeqKey)
+            if (filterUserId && Number.isFinite(sinceSeq)) {
+                const startKey = makeUserSeqKey(filterUserId, sinceSeq + 1);
+                const gsiResult = await ddb.send(new QueryCommand({
+                    TableName: STROKES_TABLE,
+                    IndexName: 'StrokesByUserSeq',
+                    KeyConditionExpression: 'roomId = :roomId AND userSeqKey >= :start',
+                    ExpressionAttributeValues: {
+                        ':roomId': roomId,
+                        ':start': startKey
+                    },
+                    Limit: 500
+                }));
+
+                const strokes = (gsiResult.Items || []).map(item => ({
+                    path: item.path,
+                    strokeColor: item.strokeColor || '#000000',
+                    strokeWidth: item.strokeWidth || 5,
+                    smoothing: item.smoothing || 0,
+                    userId: item.userId || 'unknown',
+                    timestamp: item.timestamp,
+                    seq: item.seq || 0
+                }));
+
+                return response(200, { strokes });
+            }
+
             const result = await ddb.send(new QueryCommand({
                 TableName: STROKES_TABLE,
                 KeyConditionExpression: 'roomId = :roomId',
@@ -69,21 +110,24 @@ exports.handler = async (event) => {
         // POST /api/rooms/{roomId}/strokes - Save new stroke
         if (method === 'POST') {
             const body = JSON.parse(event.body || '{}');
-            const { path, strokeColor, strokeWidth, smoothing, userId } = body;
+            const { path, strokeColor, strokeWidth, smoothing, userId, seq } = body;
             
             if (!path) {
                 return response(400, { error: 'path is required' });
             }
             
+            const tsKey = makeTimestampKey();
             const item = {
                 roomId: roomId,
-                objectId: uuidv4(),
+                timestamp: tsKey,
+                objectId: uuidv4(), // non-key identifier retained for debugging
                 path: path,
                 strokeColor: strokeColor || '#000000',
                 strokeWidth: strokeWidth || 5,
                 smoothing: smoothing || 0,
                 userId: userId || 'unknown',
-                timestamp: Date.now()
+                seq: Number.isFinite(seq) ? Number(seq) : 0,
+                userSeqKey: makeUserSeqKey(userId, Number.isFinite(seq) ? Number(seq) : 0)
             };
             
             await ddb.send(new PutCommand({
@@ -120,7 +164,7 @@ exports.handler = async (event) => {
                         DeleteRequest: {
                             Key: {
                                 roomId,
-                                objectId: item.objectId
+                                timestamp: item.timestamp
                             }
                         }
                     }));
