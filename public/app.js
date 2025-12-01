@@ -556,10 +556,19 @@ function handleRoomDelete(room) {
 
 // Multi-user drawing application with WebSocket support
 
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+const canvasEl = document.getElementById('canvas');
+if (canvasEl) {
+    canvasEl.width = CANVAS_WIDTH;
+    canvasEl.height = CANVAS_HEIGHT;
+    canvasEl.style.width = `${CANVAS_WIDTH}px`;
+    canvasEl.style.height = `${CANVAS_HEIGHT}px`;
+}
 // Initialize Fabric.js canvas
 const canvas = new fabric.Canvas('canvas', {
-    width: 800,
-    height: 600,
+    width: CANVAS_WIDTH,
+    height: CANVAS_HEIGHT,
     backgroundColor: '#ffffff'
 });
 
