@@ -33,6 +33,7 @@ const cancelCreateBtn   = document.getElementById('cancelCreateBtn');
 const confirmCreateBtn  = document.getElementById('confirmCreateBtn');
 const whiteboardList    = document.getElementById('whiteboardList');
 const backToMenuBtn     = document.getElementById('backToMenuBtn');
+const toggleArchivedBtn = document.getElementById('toggleArchivedBtn');
 
 // In-memory rooms (for now – later these will come from the backend)
 let rooms = [];
@@ -1635,7 +1636,6 @@ const saveBtn = document.getElementById('saveBtn');
 const loadBtn = document.getElementById('loadBtn');
 const fileInput = document.getElementById('fileInput');
 const deployCounterEl = document.getElementById('deployCounter');
-const toggleArchivedBtn = document.getElementById('toggleArchivedBtn');
 const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
 let defaultRoomSettings = null;
 const userSeqById = new Map(); // userId -> last seq applied
