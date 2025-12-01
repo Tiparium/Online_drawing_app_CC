@@ -6,13 +6,17 @@ set -e
 
 ENVIRONMENT="${ENVIRONMENT:-production}"
 VERBOSE=false
+RESET_TABLES=false
+REGION="${AWS_REGION:-us-east-1}"
 
 for arg in "$@"; do
     case "$arg" in
         -v|--verbose) VERBOSE=true ;;
+        -reset|--reset) RESET_TABLES=true ;;
         -h|--help)
-            echo "Usage: $0 [-v]"
+            echo "Usage: $0 [-v] [--reset]"
             echo "  -v, --verbose   Print additional details (table checks, CLI output)"
+            echo "  --reset         Drop and recreate Rooms/CanvasObjects tables for this env (destructive)"
             exit 0
             ;;
     esac
@@ -48,6 +52,14 @@ if $VERBOSE; then
     echo "Checking DynamoDB tables..."
 fi
 TABLES=("Rooms-${ENVIRONMENT}" "CanvasObjects-${ENVIRONMENT}" "Connections-${ENVIRONMENT}" "DeploymentStats-${ENVIRONMENT}")
+
+if $RESET_TABLES; then
+    echo "Resetting Rooms/CanvasObjects tables for ${ENVIRONMENT}..."
+    for t in "Rooms-${ENVIRONMENT}" "CanvasObjects-${ENVIRONMENT}"; do
+        aws dynamodb delete-table --table-name "$t" --region "$REGION" >/dev/null 2>&1 || true
+        aws dynamodb wait table-not-exists --table-name "$t" --region "$REGION" >/dev/null 2>&1 || true
+    done
+fi
 
 for table in "${TABLES[@]}"; do
     if aws dynamodb describe-table --table-name "$table" --region "$REGION" &>/dev/null; then

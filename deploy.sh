@@ -14,17 +14,20 @@ CONFIG_PATH="public/config.js"
 RUN_ALL=false
 RUN_HARD=false
 VERBOSE=false
+RESET_TABLES=false
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 for arg in "$@"; do
   case "$arg" in
     -all|--all) RUN_ALL=true ;;
     -hard|--hard) RUN_HARD=true ;;
+    -reset|--reset) RESET_TABLES=true ;;
     -v|--verbose) VERBOSE=true ;;
     -h|--help)
-      echo "Usage: $0 [-all] [-hard] [-v]"
+      echo "Usage: $0 [-all] [-hard] [-reset] [-v]"
       echo "  -all    Deploy backend (deploy-lambda.sh) then frontend (this script)"
       echo "  -hard   When combined with -all, recreate prereqs (DynamoDB tables) before backend deploy"
+      echo "  -reset  When combined with -all, wipe Rooms/CanvasObjects tables before setup (destructive)"
       echo "  -v      Verbose output (table checks, setup logs)"
       exit 0
       ;;
@@ -43,7 +46,15 @@ ensure_tables() {
     fi
   done
 
-  if [ "${#missing[@]}" -gt 0 ] || [ "$RUN_HARD" = true ]; then
+  if [ "$RESET_TABLES" = true ]; then
+    echo "Resetting Rooms/CanvasObjects tables for ${env}..."
+    for t in "Rooms-${env}" "CanvasObjects-${env}"; do
+      aws dynamodb delete-table --table-name "$t" --region "$region" >/dev/null 2>&1 || true
+      aws dynamodb wait table-not-exists --table-name "$t" --region "$region" >/dev/null 2>&1 || true
+    done
+  fi
+
+  if [ "${#missing[@]}" -gt 0 ] || [ "$RUN_HARD" = true ] || [ "$RESET_TABLES" = true ]; then
     echo "Preparing DynamoDB tables (${env})..."
     if [ "$VERBOSE" = true ]; then
       (cd "${SCRIPT_DIR}/backend/infrastructure" && ENVIRONMENT="$env" VERBOSE=1 ./setup-dynamodb.sh)

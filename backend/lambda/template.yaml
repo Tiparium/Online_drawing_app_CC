@@ -217,6 +217,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Sub 'Rooms-${Environment}'
+        - DynamoDBCrudPolicy:
+            TableName: !Sub 'CanvasObjects-${Environment}'
       Events:
         GetRooms:
           Type: Api
@@ -230,6 +232,30 @@ Resources:
             RestApiId: !Ref DrawingRestApi
             Path: /api/rooms
             Method: POST
+        DeleteRoom:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}
+            Method: DELETE
+        ArchiveRoom:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/archive
+            Method: POST
+        OptionsRoomId:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}
+            Method: OPTIONS
+        OptionsArchive:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DrawingRestApi
+            Path: /api/rooms/{roomId}/archive
+            Method: OPTIONS
         OptionsRooms:
           Type: Api
           Properties:
