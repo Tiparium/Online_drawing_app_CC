@@ -367,15 +367,19 @@ ws.send(JSON.stringify({
 
             case 'userSettings':
                if (users.has(userId)) {
-                  users.get(userId).userData.color = data.color;
-                  users.get(userId).userData.brushSize = data.brushSize;
-                  users.get(userId).userData.smoothing = data.smoothing;
-                  users.get(userId).userData.mode = data.mode;
-                  const roomId = users.get(userId).roomId;
+                  const userEntry = users.get(userId);
+                  userEntry.userData.color = data.color;
+                  userEntry.userData.brushSize = data.brushSize;
+                  userEntry.userData.smoothing = data.smoothing;
+                  userEntry.userData.mode = data.mode;
+                  if (data.name) {
+                     userEntry.userData.name = data.name;
+                  }
+                  const roomId = userEntry.roomId;
                   broadcast({
                      type: 'userSettings',
                      userId,
-                     userData: users.get(userId).userData,
+                     userData: userEntry.userData,
                      roomId
                   }, userId, roomId);
                }

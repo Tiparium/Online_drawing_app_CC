@@ -18,6 +18,11 @@
             <header class="menu-header">
                 <h1>Drawing Board</h1>
                 <p>Select a whiteboard to join or create a new one</p>
+                <div class="auth-inline">
+                    <span class="auth-label">Currently logged in as</span>
+                    <span id="userEmail" class="auth-email">—</span>
+                    <button id="signOutBtn" class="signout-btn">Sign out</button>
+                </div>
             </header>
 
             <!-- Header bar containing title + Create button -->
@@ -25,7 +30,6 @@
                 <h2>Available Whiteboards <span id="availableCount" class="count-pill">0</span></h2>
                 <div class="header-actions">
                   <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
-                  <button id="signOutBtn" class="cancel-btn">Sign out</button>
                 </div>
             </div>
 
@@ -192,6 +196,11 @@
           window.COG_USER = idToken.payload; // contains email, sub, etc.
 
           console.log('Logged in as:', window.COG_USER.email);
+          const emailEl = document.getElementById('userEmail');
+          if (emailEl) {
+            emailEl.textContent = window.COG_USER.email || 'Signed in';
+          }
+          window.__USER_EMAIL = window.COG_USER.email || null;
           document.body.classList.add('authed'); // used by CSS to show the app
           window.__authReady = true;
 

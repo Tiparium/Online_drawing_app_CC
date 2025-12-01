@@ -361,7 +361,8 @@ exports.handler = async (event) => {
                         color: body.color,
                         brushSize: body.brushSize,
                         smoothing: body.smoothing,
-                        mode: body.mode
+                        mode: body.mode,
+                        name: body.name
                     },
                     roomId: roomId
                 }, connectionId, apiGateway);

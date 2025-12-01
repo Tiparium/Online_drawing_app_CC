@@ -998,3 +998,36 @@ footer {
 }
 
 /* Back button override */
+.auth-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+
+.auth-label {
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+.auth-email {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.signout-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.signout-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.55);
+}

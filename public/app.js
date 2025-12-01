@@ -34,6 +34,7 @@ const confirmCreateBtn  = document.getElementById('confirmCreateBtn');
 const whiteboardList    = document.getElementById('whiteboardList');
 const backToMenuBtn     = document.getElementById('backToMenuBtn');
 const toggleArchivedBtn = document.getElementById('toggleArchivedBtn');
+const userEmailEl       = document.getElementById('userEmail');
 
 // In-memory rooms (for now – later these will come from the backend)
 let rooms = [];
@@ -727,6 +728,24 @@ class User {
         // Update users pane avatar color
         this.updateUsersPaneItem();
     }
+
+    updateName(newName) {
+        if (!newName || newName === this.name) return;
+        this.name = newName;
+        this.initials = this.generateInitials(newName);
+        // Update cursor tooltip/initials
+        const wrapper = getUserCursors(this.roomId).get(this.userId);
+        if (wrapper) {
+            const cursor = wrapper.querySelector('.user-cursor');
+            if (cursor) {
+                cursor.setAttribute('data-initials', this.initials);
+                cursor.setAttribute('title', newName);
+            }
+            const tooltip = wrapper.querySelector('.cursor-tooltip');
+            if (tooltip) tooltip.textContent = newName;
+        }
+        this.updateUsersPaneItem();
+    }
     
     addToUsersPane() {
         const usersList = document.getElementById('usersList');
@@ -752,7 +771,7 @@ class User {
         
         const name = document.createElement('span');
         name.className = 'user-name';
-        name.textContent = this.name;
+        name.textContent = this.isLocal ? `You (${this.name})` : this.name;
         
         userInfo.appendChild(avatar);
         userInfo.appendChild(name);
@@ -781,6 +800,11 @@ class User {
             const avatar = userItem.querySelector('.user-avatar');
             if (avatar) {
                 avatar.style.color = this.color;
+                avatar.textContent = this.initials;
+            }
+            const nameEl = userItem.querySelector('.user-name');
+            if (nameEl) {
+                nameEl.textContent = this.isLocal ? `You (${this.name})` : this.name;
             }
         }
     }
@@ -1311,8 +1335,9 @@ function handleWebSocketMessage(data) {
     switch (data.type) {
         case 'userConnected': {
             currentUserId = data.userId;
+            const email = getAuthEmail();
             const localUserData = {
-                name: 'You',
+                name: email || 'You',
                 ...data.userData
             };
             localUser = new User(data.userId, localUserData, true, activeRoomId);
@@ -1391,6 +1416,22 @@ function handleWebSocketMessage(data) {
                 remoteUser.updateCursorPosition();
             }
             break;
+
+        case 'userSettings': {
+            const remote = getRemoteUsers(targetRoomId).get(data.userId);
+            if (remote && data.userData) {
+                if (data.userData.name) {
+                    remote.updateName(data.userData.name);
+                }
+                remote.updateSettings(
+                    data.userData.color,
+                    data.userData.brushSize,
+                    data.userData.smoothing,
+                    data.userData.mode
+                );
+            }
+            break;
+        }
             
         case 'drawingUpdate':
             handleRemoteDrawing(data.userId, data.path, data.action, targetRoomId, data.strokeColor, data.strokeWidth, data.smoothing, data.seq, data.shapeType, data.objectData);
@@ -1597,6 +1638,9 @@ let currentMode = 'draw';
 function setupLocalUser() {
     if (!localUser) return;
 
+    const displayName = getAuthEmail() || localUser.name;
+    localUser.updateName(displayName);
+
     updateActiveRoomSettings({
         color: localUser.color,
         brushSize: localUser.brushSize,
@@ -1613,7 +1657,8 @@ function setupLocalUser() {
         color: localUser.color,
         brushSize: localUser.brushSize,
         smoothing: localUser.smoothing,
-        mode: localUser.mode
+        mode: localUser.mode,
+        name: displayName
     });
 }
 
@@ -1648,6 +1693,14 @@ let lastCursorSend = 0;
 let lastDragSend = 0;
 let lastLiveStrokeSend = 0;
 const liveStrokesByUser = new Map(); // userId -> fabric.Path
+let cachedUserEmail = window.__USER_EMAIL || null;
+
+function getAuthEmail() {
+    if (window.__USER_EMAIL) {
+        cachedUserEmail = window.__USER_EMAIL;
+    }
+    return cachedUserEmail;
+}
 
 function initDefaultRoomSettings() {
     if (defaultRoomSettings) return;
@@ -2858,8 +2911,9 @@ function ensureLocalUser(roomId = getActiveRoomId()) {
         return localUser;
     }
     const settings = getRoomSettings(roomId);
+    const displayName = getAuthEmail() || 'You';
     const userData = {
-        name: 'You',
+        name: displayName,
         color: settings.color,
         brushSize: settings.brushSize,
         smoothing: settings.smoothing,
