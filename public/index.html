@@ -12,18 +12,24 @@
          MAIN MENU SCREEN
     ============================= -->
     <div id="mainMenu" class="screen active">
-        <div id="deployCounter" class="deploy-counter">Deploy #0</div>
         <div class="menu-container">
 
             <header class="menu-header">
                 <h1>Drawing Board</h1>
                 <p>Select a whiteboard to join or create a new one</p>
+                <div class="auth-inline">
+                    <span class="auth-label">Currently logged in as</span>
+                    <span id="userEmail" class="auth-email">—</span>
+                    <button id="signOutBtn" class="signout-btn">Sign out</button>
+                </div>
             </header>
 
             <!-- Header bar containing title + Create button -->
             <div class="whiteboard-list-header">
                 <h2>Available Whiteboards <span id="availableCount" class="count-pill">0</span></h2>
-                <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
+                <div class="header-actions">
+                  <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
+                </div>
             </div>
 
             <!-- Scrollable list container -->
@@ -40,6 +46,7 @@
 
         </div>
     </div>
+    <div id="deployCounter" class="deploy-counter">Deployment #0</div>
 
 
     <!-- ============================
@@ -160,11 +167,11 @@
       Amplify.configure({
         Auth: {
           region: 'us-east-1',
-          userPoolId: 'us-east-1_dzXKK1iCY',              // your pool ID
-          userPoolWebClientId: 'm2kghbo1i1ovjofmslsolp429', // your app client ID
+          userPoolId: 'us-east-1_bRbfUSQT9',              // your pool ID
+          userPoolWebClientId: '1m1odghfuarhgopu8l1on1m8au', // your app client ID
           oauth: {
             // NOTE: domain is WITHOUT /login
-            domain: 'online-drawing-app-auth-cs218.auth.us-east-1.amazoncognito.com',
+            domain: 'online-drawing-app-auth-cs218-v2.auth.us-east-1.amazoncognito.com',
             scope: ['openid', 'email', 'profile'],
             redirectSignIn: 'https://d2s6tk6qg8cklz.cloudfront.net',
             redirectSignOut: 'https://d2s6tk6qg8cklz.cloudfront.net',
@@ -189,6 +196,11 @@
           window.COG_USER = idToken.payload; // contains email, sub, etc.
 
           console.log('Logged in as:', window.COG_USER.email);
+          const emailEl = document.getElementById('userEmail');
+          if (emailEl) {
+            emailEl.textContent = window.COG_USER.email || 'Signed in';
+          }
+          window.__USER_EMAIL = window.COG_USER.email || null;
           document.body.classList.add('authed'); // used by CSS to show the app
           window.__authReady = true;
 
@@ -209,6 +221,19 @@
 
       // Kick off login check as soon as page loads
       ensureLoggedIn();
+
+      // Sign out button
+      const signOutBtn = document.getElementById('signOutBtn');
+      if (signOutBtn && Auth) {
+        signOutBtn.addEventListener('click', async () => {
+          try {
+            await Auth.signOut();
+            window.location.href = 'https://d2s6tk6qg8cklz.cloudfront.net';
+          } catch (err) {
+            console.error('Sign-out failed', err);
+          }
+        });
+      }
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
     <script src="app.js"></script>

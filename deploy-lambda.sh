@@ -55,6 +55,11 @@ TABLES=("Rooms-${ENVIRONMENT}" "CanvasObjects-${ENVIRONMENT}" "Connections-${ENV
 
 if $RESET_TABLES; then
     echo "Resetting Rooms/CanvasObjects tables for ${ENVIRONMENT}..."
+    read -r -p "This will wipe Rooms-${ENVIRONMENT} and CanvasObjects-${ENVIRONMENT}. Proceed? (y/N): " yn
+    case "$yn" in
+      [Yy]* ) ;;
+      * ) echo "Abort reset."; exit 1 ;;
+    esac
     for t in "Rooms-${ENVIRONMENT}" "CanvasObjects-${ENVIRONMENT}"; do
         aws dynamodb delete-table --table-name "$t" --region "$REGION" >/dev/null 2>&1 || true
         aws dynamodb wait table-not-exists --table-name "$t" --region "$REGION" >/dev/null 2>&1 || true

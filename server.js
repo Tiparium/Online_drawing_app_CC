@@ -279,6 +279,9 @@ ws.send(JSON.stringify({
                const { roomId } = data;
                if (users.has(userId)) {
                   users.get(userId).roomId = roomId;
+                  if (data.name) {
+                     users.get(userId).userData.name = data.name;
+                  }
                   // Send existing users in this room to the joining user
                   const roomUsers = Array.from(users.entries())
                      .filter(([id, u]) => id !== userId && u.roomId === roomId)
@@ -288,10 +291,11 @@ ws.send(JSON.stringify({
                   ws.send(JSON.stringify({ type: 'existingUsersInRoom', roomId, users: roomUsers }));
 
                   // Notify others in the room
+                  const udata = users.get(userId).userData;
                   broadcast({
                      type: 'userJoined',
                      userId,
-                     userData,
+                     userData: udata,
                      roomId
                   }, userId, roomId);
                }
@@ -367,15 +371,19 @@ ws.send(JSON.stringify({
 
             case 'userSettings':
                if (users.has(userId)) {
-                  users.get(userId).userData.color = data.color;
-                  users.get(userId).userData.brushSize = data.brushSize;
-                  users.get(userId).userData.smoothing = data.smoothing;
-                  users.get(userId).userData.mode = data.mode;
-                  const roomId = users.get(userId).roomId;
+                  const userEntry = users.get(userId);
+                  userEntry.userData.color = data.color;
+                  userEntry.userData.brushSize = data.brushSize;
+                  userEntry.userData.smoothing = data.smoothing;
+                  userEntry.userData.mode = data.mode;
+                  if (data.name) {
+                     userEntry.userData.name = data.name;
+                  }
+                  const roomId = userEntry.roomId;
                   broadcast({
                      type: 'userSettings',
                      userId,
-                     userData: users.get(userId).userData,
+                     userData: userEntry.userData,
                      roomId
                   }, userId, roomId);
                }

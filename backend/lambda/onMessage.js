@@ -141,10 +141,10 @@ exports.handler = async (event) => {
     
     try {
         // Get sender's connection info to find their room
-        const connection = await ddb.send(new GetCommand({
-            TableName: CONNECTIONS_TABLE,
-            Key: { connectionId: connectionId }
-        }));
+                const connection = await ddb.send(new GetCommand({
+                    TableName: CONNECTIONS_TABLE,
+                    Key: { connectionId: connectionId }
+                }));
         
         if (!connection.Item) {
             console.warn('Connection not found:', connectionId);
@@ -152,6 +152,7 @@ exports.handler = async (event) => {
         }
         
         const roomId = body.roomId || connection.Item.roomId || 'default';
+        const incomingName = body.name;
         
         // Handle different message types
         switch (body.type) {
@@ -160,9 +161,16 @@ exports.handler = async (event) => {
                 await ddb.send(new UpdateCommand({
                     TableName: CONNECTIONS_TABLE,
                     Key: { connectionId: connectionId },
-                    UpdateExpression: 'SET roomId = :roomId',
+                    UpdateExpression: 'SET roomId = :roomId, userData = :ud',
                     ExpressionAttributeValues: {
-                        ':roomId': body.roomId
+                        ':roomId': body.roomId,
+                        ':ud': {
+                            name: incomingName || connection.Item.userData?.name || '',
+                            color: connection.Item.userData?.color || '#000000',
+                            brushSize: connection.Item.userData?.brushSize || 5,
+                            smoothing: connection.Item.userData?.smoothing || 0,
+                            mode: connection.Item.userData?.mode || 'draw'
+                        }
                     }
                 }));
                 
@@ -192,10 +200,11 @@ exports.handler = async (event) => {
                         userData: {
                             id: conn.connectionId,
                             cursor: { x: 0, y: 0 },
-                            color: '#000000',
-                            brushSize: 5,
-                            smoothing: 0,
-                            mode: 'draw'
+                            color: conn.userData?.color || '#000000',
+                            brushSize: conn.userData?.brushSize || 5,
+                            smoothing: conn.userData?.smoothing || 0,
+                            mode: conn.userData?.mode || 'draw',
+                            name: conn.userData?.name || ''
                         },
                         roomId: body.roomId
                     }));
@@ -209,10 +218,11 @@ exports.handler = async (event) => {
                         userData: {
                             id: connectionId,
                             cursor: { x: 0, y: 0 },
-                            color: '#000000',
-                            brushSize: 5,
-                            smoothing: 0,
-                            mode: 'draw'
+                            color: connection.Item?.userData?.color || '#000000',
+                            brushSize: connection.Item?.userData?.brushSize || 5,
+                            smoothing: connection.Item?.userData?.smoothing || 0,
+                            mode: connection.Item?.userData?.mode || 'draw',
+                            name: connection.Item?.userData?.name || incomingName || ''
                         }
                     })
                 }));
@@ -259,10 +269,11 @@ exports.handler = async (event) => {
                     userData: {
                         id: connectionId,
                         cursor: { x: 0, y: 0 },
-                        color: '#000000',
-                        brushSize: 5,
-                        smoothing: 0,
-                        mode: 'draw'
+                        color: connection.Item?.userData?.color || '#000000',
+                        brushSize: connection.Item?.userData?.brushSize || 5,
+                        smoothing: connection.Item?.userData?.smoothing || 0,
+                        mode: connection.Item?.userData?.mode || 'draw',
+                        name: connection.Item?.userData?.name || incomingName || ''
                     },
                     roomId: body.roomId
                 }, connectionId, apiGateway);
@@ -361,7 +372,8 @@ exports.handler = async (event) => {
                         color: body.color,
                         brushSize: body.brushSize,
                         smoothing: body.smoothing,
-                        mode: body.mode
+                        mode: body.mode,
+                        name: body.name
                     },
                     roomId: roomId
                 }, connectionId, apiGateway);
