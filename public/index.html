@@ -22,13 +22,20 @@
 
             <!-- Header bar containing title + Create button -->
             <div class="whiteboard-list-header">
-                <h2>Available Whiteboards</h2>
+                <h2>Available Whiteboards <span id="availableCount" class="count-pill">0</span></h2>
                 <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
             </div>
 
             <!-- Scrollable list container -->
             <div class="whiteboard-list-container">
                 <div id="whiteboardList"></div>
+            </div>
+            <div class="archived-list-container">
+                <div class="archived-header">
+                    <h3>Your Archived Whiteboards <span id="archivedCount" class="count-pill">0</span></h3>
+                    <button id="toggleArchivedBtn" class="toggle-archived">Show</button>
+                </div>
+                <div id="archivedWhiteboardList" style="display:none;"></div>
             </div>
 
         </div>
@@ -68,7 +75,7 @@
 
             <div class="modal-actions">
                 <button id="cancelCreateBtn" class="cancel-btn">Cancel</button>
-                <button id="confirmCreateBtn" class="confirm-btn">Create & Join</button>
+                <button id="confirmCreateBtn" class="confirm-btn">Create</button>
             </div>
 
         </div>

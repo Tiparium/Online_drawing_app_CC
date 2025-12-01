@@ -9,7 +9,7 @@ body {
     background: #1a1a1a;
     color: #e0e0e0;
     min-height: 100vh;
-    overflow: hidden;
+    overflow: auto;
 }
 
 /* Screen management */
@@ -80,8 +80,8 @@ body {
 }
 
 .whiteboard-list-container {
-    max-height: 65vh;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
     padding: 12px 10px;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(255, 255, 255, 0.25);
@@ -90,10 +90,31 @@ body {
     box-shadow: 0 4px 20px rgba(0,0,0,0.25);
 }
 
+.archived-list-container {
+    margin-top: 16px;
+    padding: 12px 10px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+}
+
+#archivedWhiteboardList .whiteboard-card {
+    opacity: 0.6;
+}
+
+.count-pill {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 0.7em;
+    background: rgba(255,255,255,0.15);
+    border-radius: 999px;
+}
+
 /* Scrollable room list panel */
 #whiteboardList {
-    max-height: 65vh;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
     padding: 12px 10px;
 
     background: rgba(0, 0, 0, 0.25);     /* subtle dark glass */
@@ -110,10 +131,10 @@ body {
 /* Compact card for dynamic room list */
 .whiteboard-card {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 12px;
 
-    padding: 12px 14px;
+    padding: 8px 10px;
     margin-bottom: 12px;
 
     background: rgba(255, 255, 255, 0.9);
@@ -131,8 +152,8 @@ body {
 }
 
 .whiteboard-preview {
-    width: 50px;
-    height: 50px;
+    width: 80px;
+    height: 80px;
     background: linear-gradient(45deg, #f0f0f0, #e0e0e0);
     border-radius: 6px;
 
@@ -150,6 +171,85 @@ body {
     font-size: 0.8em;
     margin: 0;
     opacity: 0.7;
+}
+
+.card-controls {
+    margin-left: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.delete-btn {
+    padding: 6px 10px;
+    background: #c0392b;
+    border-radius: 6px;
+    border: none;
+    color: white;
+    cursor: pointer;
+    font-size: 0.9em;
+}
+
+.confirm-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3000;
+}
+
+.confirm-box {
+    background: #ffffff;
+    color: #000;
+    padding: 16px;
+    border-radius: 10px;
+    min-width: 280px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+.confirm-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.confirm-actions button {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+}
+
+.confirm-actions .confirm-delete {
+    background: #c0392b;
+    color: #fff;
+}
+
+.confirm-actions .confirm-archive {
+    background: #f1c40f;
+    color: #000;
+}
+
+.archived-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.toggle-archived {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
 }
 
 .join-btn {

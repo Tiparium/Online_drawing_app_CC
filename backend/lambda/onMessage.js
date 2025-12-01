@@ -60,6 +60,33 @@ async function broadcastToRoom(roomId, message, excludeConnectionId, apiGateway)
     await Promise.all(postCalls);
 }
 
+// Broadcast to all connections (no room filter)
+async function broadcastAll(message, excludeConnectionId, apiGateway) {
+    const connections = await ddb.send(new ScanCommand({
+        TableName: CONNECTIONS_TABLE
+    }));
+    
+    const postCalls = (connections.Items || []).map(async (connection) => {
+        if (connection.connectionId === excludeConnectionId) return;
+        try {
+            await apiGateway.send(new PostToConnectionCommand({
+                ConnectionId: connection.connectionId,
+                Data: typeof message === 'string' ? message : JSON.stringify(message)
+            }));
+        } catch (error) {
+            console.error(`Failed to send to ${connection.connectionId}:`, error);
+            if (error.statusCode === 410) {
+                await ddb.send(new DeleteCommand({
+                    TableName: CONNECTIONS_TABLE,
+                    Key: { connectionId: connection.connectionId }
+                }));
+            }
+        }
+    });
+    
+    await Promise.all(postCalls);
+}
+
 async function clearRoomStrokes(roomId) {
     let lastEvaluatedKey;
     let deleted = 0;
@@ -250,6 +277,31 @@ exports.handler = async (event) => {
                     userId: connectionId,
                     cursor: body.cursor,
                     roomId: roomId
+                }, connectionId, apiGateway);
+                break;
+            }
+
+            case 'roomCreated': {
+                await broadcastAll({
+                    type: 'roomCreated',
+                    room: body.room
+                }, connectionId, apiGateway);
+                break;
+            }
+
+            case 'roomDeleted': {
+                await broadcastAll({
+                    type: 'roomDeleted',
+                    roomId: body.roomId
+                }, connectionId, apiGateway);
+                break;
+            }
+
+            case 'roomArchived': {
+                await broadcastAll({
+                    type: 'roomArchived',
+                    roomId: body.roomId,
+                    room: body.room
                 }, connectionId, apiGateway);
                 break;
             }

@@ -4,7 +4,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, ScanCommand, PutCommand, QueryCommand, GetCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, ScanCommand, PutCommand, QueryCommand, GetCommand, BatchWriteCommand, UpdateCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 
 const app = express();
 const server = http.createServer(app);
@@ -26,8 +26,8 @@ async function listRooms() {
    return rooms;
 }
 
-async function createRoom(name, privacy = 'public') {
-   const room = { roomId: uuidv4(), name, privacy, createdAt: Date.now() };
+async function createRoom(name, privacy = 'public', ownerId = null) {
+   const room = { roomId: uuidv4(), name, privacy, createdAt: Date.now(), ownerId: ownerId || null, archived: false };
    await ddb.send(new PutCommand({ TableName: ROOMS_TABLE, Item: room }));
    return room;
 }
@@ -134,11 +134,12 @@ app.get('/api/rooms', async (req, res) => {
 });
 
 app.post('/api/rooms', async (req, res) => {
-   const { name, privacy } = req.body || {};
+   const { name, privacy, ownerId } = req.body || {};
    if (!name) return res.status(400).json({ error: 'name required' });
    try {
-      const room = await createRoom(name, privacy || 'public');
+      const room = await createRoom(name, privacy || 'public', ownerId || null);
       res.json(room);
+      broadcast({ type: 'roomCreated', room });
    } catch (err) {
       console.error('Failed to create room', err);
       res.status(500).json({ error: 'Failed to create room' });
@@ -188,6 +189,45 @@ app.delete('/api/rooms/:roomId/strokes', async (req, res) => {
    } catch (err) {
       console.error('Failed to clear strokes', err);
       res.status(500).json({ error: 'Failed to clear strokes' });
+   }
+});
+
+app.post('/api/rooms/:roomId/archive', async (req, res) => {
+   const { roomId } = req.params;
+   const { archived } = req.body || {};
+   try {
+      await ddb.send(new UpdateCommand({
+         TableName: ROOMS_TABLE,
+         Key: { roomId },
+         UpdateExpression: 'SET archived = :a',
+         ExpressionAttributeValues: { ':a': !!archived }
+      }));
+      const updated = await ddb.send(new GetCommand({
+         TableName: ROOMS_TABLE,
+         Key: { roomId }
+      }));
+      const room = updated.Item || { roomId, archived: !!archived };
+      broadcast({ type: 'roomArchived', roomId, room });
+      res.json(room);
+   } catch (err) {
+      console.error('Failed to archive room', err);
+      res.status(500).json({ error: 'Failed to archive room' });
+   }
+});
+
+app.delete('/api/rooms/:roomId', async (req, res) => {
+   const { roomId } = req.params;
+   try {
+      await clearRoomStrokes(roomId);
+      await ddb.send(new DeleteCommand({
+         TableName: ROOMS_TABLE,
+         Key: { roomId }
+      }));
+      broadcast({ type: 'roomDeleted', roomId });
+      res.json({ ok: true });
+   } catch (err) {
+      console.error('Failed to delete room', err);
+      res.status(500).json({ error: 'Failed to delete room' });
    }
 });
 
@@ -271,21 +311,21 @@ ws.send(JSON.stringify({
                 }
                 break;
 
-            case 'drawingUpdate':
-               const roomId = data.roomId || users.get(userId)?.roomId || null;
-               if (data.action !== 'remove' && roomId) {
-                  persistStroke(roomId, {
-                     path: data.path,
-                     strokeColor: data.strokeColor,
-                     strokeWidth: data.strokeWidth,
-                     smoothing: data.smoothing,
-                     userId,
-                     seq: Number.isFinite(data.seq) ? Number(data.seq) : 0,
-                     timestamp: Date.now(),
-                     shapeType: data.shapeType,
-                     objectData: data.objectData
-                  }).catch(err => console.error('Failed to persist stroke', err));
-               }
+           case 'drawingUpdate':
+              const roomId = data.roomId || users.get(userId)?.roomId || null;
+              if (data.action !== 'remove' && roomId) {
+                 persistStroke(roomId, {
+                    path: data.path,
+                    strokeColor: data.strokeColor,
+                    strokeWidth: data.strokeWidth,
+                    smoothing: data.smoothing,
+                    userId,
+                    seq: Number.isFinite(data.seq) ? Number(data.seq) : 0,
+                    timestamp: Date.now(),
+                    shapeType: data.shapeType,
+                    objectData: data.objectData
+                 }).catch(err => console.error('Failed to persist stroke', err));
+              }
 
                // Forward drawing updates to all other users in room
                broadcast({
@@ -301,6 +341,28 @@ ws.send(JSON.stringify({
                   seq: data.seq,
                   roomId
                }, userId, roomId);
+               break;
+
+            case 'roomCreated':
+               broadcast({
+                  type: 'roomCreated',
+                  room: data.room
+               }, null, null);
+               break;
+
+            case 'roomDeleted':
+               broadcast({
+                  type: 'roomDeleted',
+                  roomId: data.roomId
+               }, null, null);
+               break;
+
+            case 'roomArchived':
+               broadcast({
+                  type: 'roomArchived',
+                  roomId: data.roomId,
+                  room: data.room
+               }, null, null);
                break;
 
             case 'userSettings':

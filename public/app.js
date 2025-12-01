@@ -38,6 +38,7 @@ const backToMenuBtn     = document.getElementById('backToMenuBtn');
 let rooms = [];
 let nextRoomId = 1;
 let currentRoom = null;
+let archivedRooms = [];
 
 function normalizeRoom(room) {
     if (!room) return null;
@@ -47,7 +48,9 @@ function normalizeRoom(room) {
         roomId: id,
         name: room.name || 'Untitled',
         privacy: room.privacy || 'public',
-        createdAt: room.createdAt || Date.now()
+        createdAt: room.createdAt || Date.now(),
+        ownerId: room.ownerId || null,
+        archived: !!room.archived
     };
 }
 // Allow overriding API/WS base via global for hosted frontends (e.g., S3 + separate backend)
@@ -73,6 +76,25 @@ async function apiCreateRoom(payload) {
     if (!res.ok) throw new Error(`room create failed: ${res.status}`);
     const created = await res.json();
     return normalizeRoom(created);
+}
+
+async function apiArchiveRoom(roomId, archived = true) {
+    const res = await fetch(`${apiBaseNormalized}/api/rooms/${roomId}/archive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived })
+    });
+    if (!res.ok) throw new Error(`archive failed: ${res.status}`);
+    const updated = await res.json();
+    return normalizeRoom(updated);
+}
+
+async function apiDeleteRoom(roomId) {
+    const res = await fetch(`${apiBaseNormalized}/api/rooms/${roomId}`, {
+        method: 'DELETE'
+    });
+    if (!res.ok) throw new Error(`delete failed: ${res.status}`);
+    return true;
 }
 
 async function apiGetRoomStrokes(roomId) {
@@ -148,8 +170,13 @@ if (cancelCreateBtn && createModal) {
 }
 
 async function loadRooms() {
+    if (!currentUserId && window.COG_USER && window.COG_USER.sub) {
+        currentUserId = window.COG_USER.sub;
+    }
     try {
         rooms = await apiGetRooms();
+        archivedRooms = rooms.filter(r => r.archived);
+        rooms = rooms.filter(r => !r.archived);
         updateRoomList();
     } catch (err) {
         console.error('Failed to load rooms', err);
@@ -172,11 +199,13 @@ if (confirmCreateBtn && createModal) {
             return;
         }
 
-        apiCreateRoom({ name, privacy }).then(room => {
+        const authId = (window.COG_USER && window.COG_USER.sub) ? window.COG_USER.sub : null;
+        const ownerId = authId || currentUserId || null;
+        apiCreateRoom({ name, privacy, ownerId }).then(room => {
             rooms.push(room);
             updateRoomList();
             createModal.style.display = 'none';
-            joinRoom(room.id || room.roomId);
+            sendWebSocketMessage('roomCreated', { roomId: null, room });
         }).catch(err => {
             console.error('Room creation failed', err);
             alert('Failed to create room');
@@ -195,20 +224,33 @@ if (backToMenuBtn) {
     });
 }
 
+if (toggleArchivedBtn) {
+    toggleArchivedBtn.addEventListener('click', () => {
+        const archivedListEl = document.getElementById('archivedWhiteboardList');
+        if (!archivedListEl) return;
+        const isHidden = archivedListEl.style.display === 'none';
+        archivedListEl.style.display = isHidden ? 'block' : 'none';
+        toggleArchivedBtn.textContent = isHidden ? 'Hide' : 'Show';
+    });
+}
+
 function updateRoomList() {
     if (!whiteboardList) return;
 
     whiteboardList.innerHTML = '';
+    const archivedListEl = document.getElementById('archivedWhiteboardList');
+    if (archivedListEl) archivedListEl.innerHTML = '';
+    const availCountEl = document.getElementById('availableCount');
+    const archivedCountEl = document.getElementById('archivedCount');
 
     if (rooms.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'no-whiteboards';
         empty.innerHTML = '<p>No whiteboards available yet. Create your first one!</p>';
         whiteboardList.appendChild(empty);
-        return;
     }
-
-    rooms.forEach(room => {
+    const renderRooms = (listEl, list, isArchived = false) => {
+        list.forEach(room => {
         const card = document.createElement('div');
         card.className = 'whiteboard-card';
 
@@ -230,15 +272,70 @@ function updateRoomList() {
 
         const joinBtn = document.createElement('button');
         joinBtn.className = 'join-btn';
-        joinBtn.textContent = 'Join';
-        joinBtn.addEventListener('click', () => joinRoom(room.id || room.roomId));
+        joinBtn.textContent = isArchived ? 'Archived' : 'Join';
+        if (isArchived) {
+            joinBtn.disabled = true;
+            joinBtn.style.opacity = '0.6';
+        } else {
+            joinBtn.addEventListener('click', () => joinRoom(room.id || room.roomId));
+        }
+
+            const controls = document.createElement('div');
+            controls.className = 'card-controls';
+
+            joinBtn.style.flex = '1';
+            controls.appendChild(joinBtn);
+            const authId = (window.COG_USER && window.COG_USER.sub) ? window.COG_USER.sub : null;
+            const canManage = (!room.ownerId) || (currentUserId && room.ownerId === currentUserId) || (authId && room.ownerId === authId);
+            if (canManage) {
+                const delBtn = document.createElement('button');
+                delBtn.className = 'delete-btn';
+                delBtn.textContent = '🗑️';
+                delBtn.title = 'Delete or archive';
+                delBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    handleRoomDelete(room);
+                });
+                controls.appendChild(delBtn);
+                if (isArchived) {
+                    const restoreBtn = document.createElement('button');
+                    restoreBtn.className = 'join-btn';
+                    restoreBtn.textContent = 'Restore';
+                    restoreBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        apiArchiveRoom(room.id || room.roomId, false).then(updated => {
+                            archivedRooms = archivedRooms.filter(r => r.id !== room.id);
+                            rooms.push(updated);
+                            updateRoomList();
+                        }).catch(err => {
+                            console.error('Restore failed', err);
+                            alert('Failed to restore room');
+                        });
+                    });
+                    restoreBtn.style.flex = '1';
+                    controls.appendChild(restoreBtn);
+                }
+            }
 
         card.appendChild(preview);
         card.appendChild(info);
-        card.appendChild(joinBtn);
+            card.appendChild(controls);
 
-        whiteboardList.appendChild(card);
+        listEl.appendChild(card);
     });
+    };
+
+    renderRooms(whiteboardList, rooms, false);
+    if (archivedListEl) {
+        const myArchived = archivedRooms.filter(r => r.ownerId && r.ownerId === currentUserId);
+        if (myArchived.length === 0) {
+            archivedListEl.innerHTML = '<p style="opacity:0.7">No archived whiteboards.</p>';
+        } else {
+            renderRooms(archivedListEl, myArchived, true);
+        }
+    }
+    if (availCountEl) availCountEl.textContent = rooms.length;
+    if (archivedCountEl) archivedCountEl.textContent = archivedRooms.filter(r => r.ownerId && r.ownerId === currentUserId).length;
 }
 
 function joinRoom(roomId) {
@@ -393,6 +490,67 @@ function applyRoomSettings(roomId) {
 function updateActiveRoomSettings(partialSettings) {
     const settings = getRoomSettings();
     Object.assign(settings, partialSettings);
+}
+
+function handleRoomDelete(room) {
+    if (!room) return;
+    const authId = (window.COG_USER && window.COG_USER.sub) ? window.COG_USER.sub : null;
+    if (room.ownerId && currentUserId && room.ownerId !== currentUserId && (!authId || room.ownerId !== authId)) {
+        alert('You can only delete rooms you own.');
+        return;
+    }
+    const modal = document.createElement('div');
+    modal.className = 'confirm-modal';
+    modal.innerHTML = `
+      <div class="confirm-box">
+        <h3>Manage "${room.name}"</h3>
+        <p>Choose an action for this whiteboard.</p>
+        <div class="confirm-actions">
+          <button class="confirm-cancel">Cancel</button>
+          <button class="confirm-archive">Archive</button>
+          <button class="confirm-delete">Delete</button>
+        </div>
+      </div>
+    `;
+    const removeModal = () => {
+        if (modal.parentElement) modal.parentElement.removeChild(modal);
+    };
+    modal.querySelector('.confirm-cancel').addEventListener('click', removeModal);
+    modal.querySelector('.confirm-archive').addEventListener('click', () => {
+        apiArchiveRoom(room.id || room.roomId, true).then((updated) => {
+            sendWebSocketMessage('roomArchived', { roomId: null, room: updated });
+            return loadRooms();
+        }).then(() => {
+            if (currentRoom && (currentRoom.id === room.id || currentRoom.roomId === room.roomId)) {
+                cleanupRoomState(currentRoom.id);
+                currentRoom = null;
+                alert('This whiteboard was archived. Returning to menu.');
+                showScreen(mainMenu);
+            }
+            alert('Whiteboard archived successfully.');
+        }).catch(err => {
+            console.error('Archive failed', err);
+            alert('Failed to archive whiteboard.');
+        }).finally(removeModal);
+    });
+    modal.querySelector('.confirm-delete').addEventListener('click', () => {
+        apiDeleteRoom(room.id || room.roomId).then(() => {
+            sendWebSocketMessage('roomDeleted', { roomId: room.id || room.roomId, room });
+            return loadRooms();
+        }).then(() => {
+            if (currentRoom && (currentRoom.id === room.id || currentRoom.roomId === room.roomId)) {
+                cleanupRoomState(currentRoom.id);
+                currentRoom = null;
+                alert('This whiteboard was deleted. Returning to menu.');
+                showScreen(mainMenu);
+            }
+            alert('Whiteboard deleted successfully.');
+        }).catch(err => {
+            console.error('Delete failed', err);
+            alert('Failed to delete whiteboard.');
+        }).finally(removeModal);
+    });
+    document.body.appendChild(modal);
 }
 
 
@@ -1141,7 +1299,7 @@ function handleWebSocketMessage(data) {
     }
 
     switch (data.type) {
-        case 'userConnected':
+        case 'userConnected': {
             currentUserId = data.userId;
             const localUserData = {
                 name: 'You',
@@ -1149,9 +1307,11 @@ function handleWebSocketMessage(data) {
             };
             localUser = new User(data.userId, localUserData, true, activeRoomId);
             setupLocalUser();
+            updateRoomList();
             break;
+        }
             
-        case 'existingUsers':
+        case 'existingUsers': {
             data.users.forEach(user => {
                 if (user.userId !== currentUserId) {
                     const remoteUserData = {
@@ -1162,7 +1322,9 @@ function handleWebSocketMessage(data) {
                     getRemoteUsers(targetRoomId).set(user.userId, remoteUser);
                 }
             });
+            updateRoomList();
             break;
+        }
         
         case 'existingUsersInRoom':
             if (data.roomId !== activeRoomId) break;
@@ -1226,6 +1388,59 @@ function handleWebSocketMessage(data) {
 
         case 'canvasCleared':
             applyRemoteCanvasRedraw(targetRoomId);
+            break;
+
+        case 'roomDeleted':
+            rooms = rooms.filter(r => r.id !== targetRoomId && r.roomId !== targetRoomId);
+            archivedRooms = archivedRooms.filter(r => r.id !== targetRoomId && r.roomId !== targetRoomId);
+            updateRoomList();
+            if (currentRoom && currentRoom.id === targetRoomId) {
+                cleanupRoomState(currentRoom.id);
+                currentRoom = null;
+                alert('This whiteboard was deleted. Returning to menu.');
+                showScreen(mainMenu);
+            }
+            break;
+
+        case 'roomArchived':
+            const archivedRoom = normalizeRoom(data.room);
+            rooms = rooms.filter(r => r.id !== targetRoomId && r.roomId !== targetRoomId);
+            if (archivedRoom) {
+                archivedRooms = archivedRooms.filter(r => r.id !== archivedRoom.id);
+                archivedRooms.push(archivedRoom);
+            }
+            updateRoomList();
+            if (currentRoom && currentRoom.id === targetRoomId) {
+                cleanupRoomState(currentRoom.id);
+                currentRoom = null;
+                alert('This whiteboard was archived.');
+                showScreen(mainMenu);
+            }
+            break;
+
+        case 'roomCreated':
+            if (data.room) {
+                const normalized = normalizeRoom(data.room);
+                rooms = rooms.filter(r => r.id !== normalized.id);
+                archivedRooms = archivedRooms.filter(r => r.id !== normalized.id);
+                if (!normalized.archived) {
+                    rooms.push(normalized);
+                } else {
+                    archivedRooms.push(normalized);
+                }
+                updateRoomList();
+            }
+            break;
+        case 'roomDeleted':
+            rooms = rooms.filter(r => r.id !== targetRoomId && r.roomId !== targetRoomId);
+            archivedRooms = archivedRooms.filter(r => r.id !== targetRoomId && r.roomId !== targetRoomId);
+            updateRoomList();
+            if (currentRoom && currentRoom.id === targetRoomId) {
+                cleanupRoomState(currentRoom.id);
+                currentRoom = null;
+                alert('This whiteboard was deleted.');
+                showScreen(mainMenu);
+            }
             break;
     }
 }
@@ -1411,6 +1626,7 @@ const saveBtn = document.getElementById('saveBtn');
 const loadBtn = document.getElementById('loadBtn');
 const fileInput = document.getElementById('fileInput');
 const deployCounterEl = document.getElementById('deployCounter');
+const toggleArchivedBtn = document.getElementById('toggleArchivedBtn');
 const strokeCachesByRoom = new Map(); // roomId -> { pending: [] }
 let defaultRoomSettings = null;
 const userSeqById = new Map(); // userId -> last seq applied
