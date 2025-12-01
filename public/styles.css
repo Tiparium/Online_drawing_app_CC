@@ -50,20 +50,6 @@ body {
     opacity: 0.9;
 }
 
-.deploy-counter {
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    background: rgba(0, 0, 0, 0.35);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
-    padding: 6px 12px;
-    font-size: 12px;
-    letter-spacing: 0.5px;
-    color: #ffffff;
-    backdrop-filter: blur(6px);
-}
-
 .whiteboard-list h2 {
     text-align: center;
     margin-bottom: 30px;
@@ -1030,4 +1016,18 @@ footer {
 .signout-btn:hover {
     background: rgba(255, 255, 255, 0.1);
     border-color: rgba(255, 255, 255, 0.55);
+}
+
+.deploy-counter {
+    position: fixed;
+    bottom: 12px;
+    right: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    color: #ffffff;
+    z-index: 2000;
 }

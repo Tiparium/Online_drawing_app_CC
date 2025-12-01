@@ -145,10 +145,10 @@ async function loadDeployCount() {
         if (!res.ok) throw new Error('deploy count failed');
         const data = await res.json();
         const count = Number(data.count);
-        deployCounterEl.textContent = `Deploy #${Number.isFinite(count) ? count : 0}`;
+        deployCounterEl.textContent = `Deployment #${Number.isFinite(count) ? count : 0}`;
     } catch (err) {
         console.error('Failed to load deploy count', err);
-        deployCounterEl.textContent = 'Deploy #?';
+        deployCounterEl.textContent = 'Deployment #?';
     }
 }
 
@@ -287,8 +287,7 @@ function updateRoomList() {
 
             joinBtn.style.flex = '1';
             controls.appendChild(joinBtn);
-            const authId = (window.COG_USER && window.COG_USER.sub) ? window.COG_USER.sub : null;
-            const canManage = (!room.ownerId) || (currentUserId && room.ownerId === currentUserId) || (authId && room.ownerId === authId);
+            const canManage = isCurrentUserOwner(room);
             if (canManage) {
                 const delBtn = document.createElement('button');
                 delBtn.className = 'delete-btn';
@@ -352,10 +351,10 @@ function joinRoom(roomId) {
     applyRoomSettings(currentRoom.id);
     renderUsersForActiveRoom();
     loadRoomStrokes(currentRoom.id).then(() => {
-        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id });
+        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id, name: getAuthEmail() || cachedUserEmail || 'You' });
         showScreen(drawingScreen);
     }).catch(() => {
-        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id });
+        sendWebSocketMessage('joinRoom', { roomId: currentRoom.id, name: getAuthEmail() || cachedUserEmail || 'You' });
         showScreen(drawingScreen);
     });
 }
@@ -626,7 +625,8 @@ class User {
     constructor(userId, userData, isLocal = false, roomId = getActiveRoomId()) {
         this.userId = userId;
         this.roomId = roomId;
-        this.name = userData.name || (isLocal ? 'You' : 'User');
+        this.nameRaw = userData.name || (isLocal ? 'You' : 'User');
+        this.name = formatDisplayName(this.nameRaw);
         this.color = userData.color || '#000000';
         this.brushSize = userData.brushSize || 5;
         this.smoothing = userData.smoothing || 0;
@@ -730,19 +730,20 @@ class User {
     }
 
     updateName(newName) {
-        if (!newName || newName === this.name) return;
-        this.name = newName;
-        this.initials = this.generateInitials(newName);
+        if (!newName || newName === this.nameRaw) return;
+        this.nameRaw = newName;
+        this.name = formatDisplayName(newName);
+        this.initials = this.generateInitials(this.name);
         // Update cursor tooltip/initials
         const wrapper = getUserCursors(this.roomId).get(this.userId);
         if (wrapper) {
             const cursor = wrapper.querySelector('.user-cursor');
             if (cursor) {
                 cursor.setAttribute('data-initials', this.initials);
-                cursor.setAttribute('title', newName);
+                cursor.setAttribute('title', this.name);
             }
             const tooltip = wrapper.querySelector('.cursor-tooltip');
-            if (tooltip) tooltip.textContent = newName;
+            if (tooltip) tooltip.textContent = this.name;
         }
         this.updateUsersPaneItem();
     }
@@ -1334,6 +1335,10 @@ function handleWebSocketMessage(data) {
 
     switch (data.type) {
         case 'userConnected': {
+            if (localUser) {
+                localUser.remove();
+                userSeqById.delete(localUser.userId);
+            }
             currentUserId = data.userId;
             const email = getAuthEmail();
             const localUserData = {
@@ -1348,11 +1353,18 @@ function handleWebSocketMessage(data) {
             
         case 'existingUsers': {
             data.users.forEach(user => {
-                if (user.userId !== currentUserId) {
-                    const remoteUserData = {
-                        name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
-                        ...user.userData
-                    };
+                if (user.userId === currentUserId || (localUser && user.userId === localUser.userId)) {
+                    return;
+                }
+                const remoteUserData = {
+                    name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
+                    ...user.userData
+                };
+                const existing = getRemoteUsers(targetRoomId).get(user.userId);
+                if (existing) {
+                    existing.updateName(remoteUserData.name);
+                    existing.updateSettings(remoteUserData.color || existing.color, remoteUserData.brushSize || existing.brushSize, remoteUserData.smoothing || existing.smoothing, remoteUserData.mode || existing.mode);
+                } else {
                     const remoteUser = new User(user.userId, remoteUserData, false, targetRoomId);
                     getRemoteUsers(targetRoomId).set(user.userId, remoteUser);
                 }
@@ -1365,12 +1377,16 @@ function handleWebSocketMessage(data) {
             if (data.roomId !== activeRoomId) break;
             const activeUsers = new Set();
             data.users.forEach(user => {
-                if (user.userId !== currentUserId) {
-                    if (getRemoteUsers(data.roomId).has(user.userId)) return;
-                    const remoteUserData = {
-                        name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
-                        ...user.userData
-                    };
+                if (user.userId === currentUserId || (localUser && user.userId === localUser.userId)) return;
+                const remoteUserData = {
+                    name: user.userData.name || `User ${user.userId.substring(0, 8)}`,
+                    ...user.userData
+                };
+                const existing = getRemoteUsers(data.roomId).get(user.userId);
+                if (existing) {
+                    existing.updateName(remoteUserData.name);
+                    existing.updateSettings(remoteUserData.color || existing.color, remoteUserData.brushSize || existing.brushSize, remoteUserData.smoothing || existing.smoothing, remoteUserData.mode || existing.mode);
+                } else {
                     const remoteUser = new User(user.userId, remoteUserData, false, data.roomId);
                     getRemoteUsers(data.roomId).set(user.userId, remoteUser);
                 }
@@ -1410,20 +1426,40 @@ function handleWebSocketMessage(data) {
             break;
             
         case 'cursorMove':
-            const remoteUser = getRemoteUsers(targetRoomId).get(data.userId);
-            if (remoteUser) {
-                remoteUser.cursor = data.cursor;
-                remoteUser.updateCursorPosition();
+            let remoteUser = getRemoteUsers(targetRoomId).get(data.userId);
+            if (!remoteUser) {
+                const fallbackData = {
+                    name: `User ${data.userId.substring(0, 8)}`,
+                    color: '#000000',
+                    brushSize: 5,
+                    smoothing: 0,
+                    mode: 'draw'
+                };
+                remoteUser = new User(data.userId, fallbackData, false, targetRoomId);
+                getRemoteUsers(targetRoomId).set(data.userId, remoteUser);
             }
+            remoteUser.cursor = data.cursor;
+            remoteUser.updateCursorPosition();
             break;
 
         case 'userSettings': {
             const remote = getRemoteUsers(targetRoomId).get(data.userId);
-            if (remote && data.userData) {
-                if (data.userData.name) {
-                    remote.updateName(data.userData.name);
+            if (data.userData) {
+                let targetUser = remote;
+                if (!targetUser) {
+                    targetUser = new User(data.userId, {
+                        name: data.userData.name || `User ${data.userId.substring(0, 8)}`,
+                        color: data.userData.color || '#000000',
+                        brushSize: data.userData.brushSize || 5,
+                        smoothing: data.userData.smoothing || 0,
+                        mode: data.userData.mode || 'draw'
+                    }, false, targetRoomId);
+                    getRemoteUsers(targetRoomId).set(data.userId, targetUser);
                 }
-                remote.updateSettings(
+                if (data.userData.name) {
+                    targetUser.updateName(data.userData.name);
+                }
+                targetUser.updateSettings(
                     data.userData.color,
                     data.userData.brushSize,
                     data.userData.smoothing,
@@ -1513,8 +1549,18 @@ function sendWebSocketMessage(type, data) {
 
 function handleRemoteDrawing(userId, pathData, action, roomId = getActiveRoomId(), strokeColor = null, strokeWidth = null, smoothing = 0, seq = null, shapeType = null, objectData = null) {
     if (roomId !== getActiveRoomId()) return;
-    const user = getRemoteUsers(roomId).get(userId);
-    if (!user) return;
+    let user = getRemoteUsers(roomId).get(userId);
+    if (!user) {
+        const fallbackData = {
+            name: `User ${userId.substring(0, 8)}`,
+            color: strokeColor || '#000000',
+            brushSize: strokeWidth || 5,
+            smoothing: smoothing || 0,
+            mode: 'draw'
+        };
+        user = new User(userId, fallbackData, false, roomId);
+        getRemoteUsers(roomId).set(userId, user);
+    }
     
     if (action !== 'live' && typeof seq === 'number') {
         const status = noteSeqForUser(userId, seq);
@@ -1694,13 +1740,34 @@ let lastDragSend = 0;
 let lastLiveStrokeSend = 0;
 const liveStrokesByUser = new Map(); // userId -> fabric.Path
 let cachedUserEmail = window.__USER_EMAIL || null;
-
 function getAuthEmail() {
     if (window.__USER_EMAIL) {
         cachedUserEmail = window.__USER_EMAIL;
     }
     return cachedUserEmail;
 }
+
+function getAuthId() {
+    return (window.COG_USER && window.COG_USER.sub) ? window.COG_USER.sub : null;
+}
+
+function isCurrentUserOwner(room) {
+    if (!room) return false;
+    const ownerId = room.ownerId || null;
+    const authId = getAuthId();
+    if (!ownerId) return true; // no owner recorded, allow
+    return ownerId === currentUserId || (authId && ownerId === authId);
+}
+
+function formatDisplayName(name) {
+    if (!name) return 'User';
+    const at = name.lastIndexOf('@');
+    if (at > 0) {
+        return name.slice(0, at);
+    }
+    return name;
+}
+
 
 function initDefaultRoomSettings() {
     if (defaultRoomSettings) return;
@@ -1731,7 +1798,7 @@ function noteSeqForUser(userId, seq) {
 }
 
 function serializeFabricObject(obj) {
-    return {
+    const base = {
         objectId: obj.objectId,
         type: obj.type,
         left: obj.left,
@@ -1749,8 +1816,13 @@ function serializeFabricObject(obj) {
         ry: obj.ry,
         text: obj.text,
         fontSize: obj.fontSize,
-        fontFamily: obj.fontFamily
+        fontFamily: obj.fontFamily,
+        textBaseline: 'alphabetic'
     };
+    if (obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') {
+        base.textBaseline = 'alphabetic';
+    }
+    return base;
 }
 
 function findObjectById(objectId) {
@@ -1790,7 +1862,8 @@ function applySerializedObject(objData, roomId) {
             obj = new fabric.IText(objData.text || '', {
                 ...commonProps,
                 fontSize: objData.fontSize || 20,
-                fontFamily: objData.fontFamily || 'Arial'
+                fontFamily: objData.fontFamily || 'Arial',
+                textBaseline: 'alphabetic'
             });
         }
     } else {
@@ -1800,7 +1873,7 @@ function applySerializedObject(objData, roomId) {
         } else if (obj.type === 'circle') {
             obj.set({ radius: objData.radius });
         } else if (obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') {
-            obj.set({ text: objData.text, fontSize: objData.fontSize, fontFamily: objData.fontFamily });
+            obj.set({ text: objData.text, fontSize: objData.fontSize, fontFamily: objData.fontFamily, textBaseline: 'alphabetic' });
         }
     }
 
@@ -2207,18 +2280,18 @@ canvas.on('text:editing:exited', (e) => {
     const seq = localUser ? getNextSeqForUser(localUser.userId) : 0;
     target.objectId = target.objectId || `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const objectData = serializeFabricObject(target);
-    const payload = {
-        action: 'update',
-        roomId,
-        shapeType: target.type,
-        objectData,
-        seq,
-        strokeColor: target.stroke || target.fill,
-        strokeWidth: target.strokeWidth || 1
-    };
-    sendWebSocketMessage('drawingUpdate', payload);
-    if (roomId) {
-        persistStrokeFallback(roomId, {
+            const payload = {
+                action: 'update',
+                roomId,
+                shapeType: target.type,
+                objectData,
+                seq,
+                strokeColor: target.stroke || target.fill,
+                strokeWidth: target.strokeWidth || 1
+            };
+            sendWebSocketMessage('drawingUpdate', payload);
+            if (roomId) {
+                persistStrokeFallback(roomId, {
             userId: localUser ? localUser.userId : 'local',
             seq,
             shapeType: target.type,
@@ -2257,6 +2330,10 @@ canvas.on('text:changed', (e) => {
 
 // Clear canvas
 clearBtn.addEventListener('click', () => {
+    if (!currentRoom || !isCurrentUserOwner(currentRoom)) {
+        alert('Only the whiteboard owner can clear this canvas.');
+        return;
+    }
     const roomId = getActiveRoomId();
     const confirmed = confirm('Are you sure you want to clear the canvas for everyone in this whiteboard?');
     if (!confirmed) return;

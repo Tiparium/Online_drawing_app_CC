@@ -279,6 +279,9 @@ ws.send(JSON.stringify({
                const { roomId } = data;
                if (users.has(userId)) {
                   users.get(userId).roomId = roomId;
+                  if (data.name) {
+                     users.get(userId).userData.name = data.name;
+                  }
                   // Send existing users in this room to the joining user
                   const roomUsers = Array.from(users.entries())
                      .filter(([id, u]) => id !== userId && u.roomId === roomId)
@@ -288,10 +291,11 @@ ws.send(JSON.stringify({
                   ws.send(JSON.stringify({ type: 'existingUsersInRoom', roomId, users: roomUsers }));
 
                   // Notify others in the room
+                  const udata = users.get(userId).userData;
                   broadcast({
                      type: 'userJoined',
                      userId,
-                     userData,
+                     userData: udata,
                      roomId
                   }, userId, roomId);
                }

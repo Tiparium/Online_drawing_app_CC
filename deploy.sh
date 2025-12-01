@@ -48,26 +48,11 @@ ensure_tables() {
 
   if [ "$RESET_TABLES" = true ]; then
     echo "Resetting Rooms/CanvasObjects tables for ${env}..."
-    # Confirm destructive reset
     read -r -p "This will wipe Rooms-${env} and CanvasObjects-${env}. Proceed? (y/N): " yn
     case "$yn" in
       [Yy]* ) ;;
       * ) echo "Abort reset."; exit 1 ;;
     esac
-    read -r -s -p "Enter password phrase: " pw; echo ""
-    exp_hash=$(printf 'yes, I%s sure' \" | shasum -a 256 2>/dev/null | awk '{print $1}')
-    # If shasum unavailable, try sha256sum
-    if [ -z "$exp_hash" ]; then
-      exp_hash=$(printf 'yes, I%s sure' \" | sha256sum 2>/dev/null | awk '{print $1}')
-    fi
-    inp_hash=$(printf '%s' "$pw" | shasum -a 256 2>/dev/null | awk '{print $1}')
-    if [ -z "$inp_hash" ]; then
-      inp_hash=$(printf '%s' "$pw" | sha256sum 2>/dev/null | awk '{print $1}')
-    fi
-    if [ -z "$exp_hash" ] || [ "$inp_hash" != "$exp_hash" ]; then
-      echo "Invalid password phrase. Abort reset."
-      exit 1
-    fi
     for t in "Rooms-${env}" "CanvasObjects-${env}"; do
       aws dynamodb delete-table --table-name "$t" --region "$region" >/dev/null 2>&1 || true
       aws dynamodb wait table-not-exists --table-name "$t" --region "$region" >/dev/null 2>&1 || true
