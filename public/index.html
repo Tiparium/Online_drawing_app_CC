@@ -23,7 +23,10 @@
             <!-- Header bar containing title + Create button -->
             <div class="whiteboard-list-header">
                 <h2>Available Whiteboards <span id="availableCount" class="count-pill">0</span></h2>
-                <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
+                <div class="header-actions">
+                  <button id="createWhiteboardBtn" class="create-btn">+ Create</button>
+                  <button id="signOutBtn" class="cancel-btn">Sign out</button>
+                </div>
             </div>
 
             <!-- Scrollable list container -->
@@ -209,6 +212,19 @@
 
       // Kick off login check as soon as page loads
       ensureLoggedIn();
+
+      // Sign out button
+      const signOutBtn = document.getElementById('signOutBtn');
+      if (signOutBtn && Auth) {
+        signOutBtn.addEventListener('click', async () => {
+          try {
+            await Auth.signOut();
+            window.location.href = 'https://d2s6tk6qg8cklz.cloudfront.net';
+          } catch (err) {
+            console.error('Sign-out failed', err);
+          }
+        });
+      }
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
     <script src="app.js"></script>
